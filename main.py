@@ -421,42 +421,63 @@ class NotionDatabase:
                 return False
             
             # 노션 DB의 실제 필드에 맞춰서 저장
-            properties = {
-                "하윗트 어워드 판매(스위트,Goh,클럽)": {  # 제목 필드
-                    "title": [{"text": {"content": article['title']}}]
-                },
-                "URL": {
-                    "url": article['url']
-                }
+            # 필드 타입을 정확히 맞춰야 함
+            properties = {}
+            
+            # 제목 필드 - 노션 DB의 실제 Title 필드명 사용
+            # 에러 메시지에서 "하윗트 어워드 판매(스위트,Goh,클럽)"가 Title 필드인 것으로 보임
+            title_field = "하윗트 어워드 판매(스위트,Goh,클럽)"  # 실제 Title 필드명
+            properties[title_field] = {
+                "title": [{"text": {"content": article['title']}}]
             }
             
-            # 선택적 필드들 (있으면 추가)
+            # URL 필드
+            if article.get('url'):
+                properties["URL"] = {
+                    "url": article['url']
+                }
+            
+            # 작성자 (Rich Text)
             if article.get('author'):
                 properties["작성자"] = {
                     "rich_text": [{"text": {"content": article['author']}}]
                 }
             
+            # 작성일 (Rich Text로 변경 - 에러 메시지에 따라)
             if article.get('date'):
                 properties["작성일"] = {
-                    "date": {"start": article['date']}
+                    "rich_text": [{"text": {"content": article['date']}}]
                 }
             
+            # 카페명 (Select)
             if article.get('cafe_name'):
-                properties["카페명"] = {
-                    "select": {"name": article['cafe_name']}
-                }
+                try:
+                    properties["카페명"] = {
+                        "select": {"name": article['cafe_name']}
+                    }
+                except:
+                    # Select 필드가 없으면 텍스트로
+                    properties["카페명"] = {
+                        "rich_text": [{"text": {"content": article['cafe_name']}}]
+                    }
             
-            # 내용 필드 처리
+            # 내용 (Rich Text)
             content = article.get('content', '')[:2000]
             if content:
                 properties["내용"] = {
                     "rich_text": [{"text": {"content": content}}]
                 }
             
-            # 크롤링 일시
-            properties["크롤링 일시"] = {
-                "date": {"start": datetime.now().isoformat()}
-            }
+            # 크롤링 일시 (Date)
+            try:
+                properties["크롤링 일시"] = {
+                    "date": {"start": datetime.now().isoformat()}
+                }
+            except:
+                # Date 필드가 없으면 텍스트로
+                properties["크롤링 일시"] = {
+                    "rich_text": [{"text": {"content": datetime.now().isoformat()}}]
+                }
             
             # uploaded 체크박스
             properties["uploaded"] = {
