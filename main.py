@@ -211,14 +211,29 @@ class NaverCafeCrawler:
                             pass
                     
                     # 작성일
-                    date = datetime.now().strftime('%Y.%m.%d.')
+                    date_str = ""
                     for date_selector in ['td.td_date', '.td_date', '.date']:
                         try:
-                            date = article.find_element(By.CSS_SELECTOR, date_selector).text.strip()
-                            if date:
+                            date_str = article.find_element(By.CSS_SELECTOR, date_selector).text.strip()
+                            if date_str:
                                 break
                         except:
                             pass
+                    
+                    # 날짜 형식 변환 (YYYY.MM.DD. → YYYY-MM-DD)
+                    if date_str:
+                        # "2025.08.25." 형식을 "2025-08-25"로 변환
+                        date_str = date_str.replace('.', '-').rstrip('-')
+                        if len(date_str.split('-')) == 3:
+                            year, month, day = date_str.split('-')
+                            # 2자리 연도 처리
+                            if len(year) == 2:
+                                year = '20' + year
+                            date = f"{year}-{month.zfill(2)}-{day.zfill(2)}"
+                        else:
+                            date = datetime.now().strftime('%Y-%m-%d')
+                    else:
+                        date = datetime.now().strftime('%Y-%m-%d')
                     
                     # 조회수
                     views = "0"
@@ -316,65 +331,80 @@ class NotionDatabase:
     def check_duplicate(self, hash_value: str) -> bool:
         """중복 체크"""
         try:
+            # 해시 필드가 없을 수도 있으므로 URL로 중복 체크
             response = self.client.databases.query(
                 database_id=self.database_id,
                 filter={
-                    "property": "해시",
-                    "rich_text": {
-                        "contains": hash_value
-                    }
+                    "or": [
+                        {
+                            "property": "URL",
+                            "url": {
+                                "contains": hash_value[:20]  # URL 일부로 체크
+                            }
+                        }
+                    ]
                 }
             )
             return len(response['results']) > 0
-        except:
+        except Exception as e:
+            logging.debug(f"중복 체크 실패: {e}")
             return False
     
     def save_article(self, article: Dict) -> bool:
         """게시물 저장"""
         try:
-            # 중복 체크
-            if self.check_duplicate(article['hash']):
+            # URL로 중복 체크
+            if self.check_duplicate(article['url']):
                 logging.info(f"⏭️ 중복 게시물 건너뛰기: {article['title'][:30]}...")
                 return False
+            
+            # 노션 DB의 실제 필드에 맞춰서 저장
+            properties = {
+                "하윗트 어워드 판매(스위트,Goh,클럽)": {  # 제목 필드
+                    "title": [{"text": {"content": article['title']}}]
+                },
+                "URL": {
+                    "url": article['url']
+                }
+            }
+            
+            # 선택적 필드들 (있으면 추가)
+            if article.get('author'):
+                properties["작성자"] = {
+                    "rich_text": [{"text": {"content": article['author']}}]
+                }
+            
+            if article.get('date'):
+                properties["작성일"] = {
+                    "date": {"start": article['date']}
+                }
+            
+            if article.get('cafe_name'):
+                properties["카페명"] = {
+                    "select": {"name": article['cafe_name']}
+                }
+            
+            # 내용 필드 처리
+            content = article.get('content', '')[:2000]
+            if content:
+                properties["내용"] = {
+                    "rich_text": [{"text": {"content": content}}]
+                }
+            
+            # 크롤링 일시
+            properties["크롤링 일시"] = {
+                "date": {"start": datetime.now().isoformat()}
+            }
+            
+            # uploaded 체크박스
+            properties["uploaded"] = {
+                "checkbox": False
+            }
             
             # 노션 페이지 생성
             page = self.client.pages.create(
                 parent={"database_id": self.database_id},
-                properties={
-                    "제목": {
-                        "title": [{"text": {"content": article['title']}}]
-                    },
-                    "URL": {
-                        "url": article['url']
-                    },
-                    "작성자": {
-                        "rich_text": [{"text": {"content": article['author']}}]
-                    },
-                    "작성일": {
-                        "date": {"start": article['date']}
-                    },
-                    "카페명": {
-                        "select": {"name": article['cafe_name']}
-                    },
-                    "내용": {
-                        "rich_text": [{"text": {"content": article['content'][:2000]}}]
-                    },
-                    "크롤링 일시": {
-                        "date": {"start": article['crawled_at']}
-                    },
-                    "조회수": {
-                        "number": int(article.get('views', 0))
-                    },
-                    "게시물 ID": {
-                        "rich_text": [{"text": {"content": article.get('article_id', '')}}]
-                    },
-                    "해시": {
-                        "rich_text": [{"text": {"content": article['hash']}}]
-                    },
-                    "uploaded": {
-                        "checkbox": False
-                    }
-                }
+                properties=properties
             )
             
             logging.info(f"✅ 노션 저장 성공: {article['title'][:30]}...")
