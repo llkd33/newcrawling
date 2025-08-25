@@ -1,0 +1,101 @@
+name: Naver Cafe Crawler
+
+on:
+  schedule:
+    # 한국 시간(KST) 기준 09:00, 12:00, 17:00
+    # UTC로는 00:00, 03:00, 08:00
+    - cron: '0 0 * * *'    # KST 09:00
+    - cron: '0 3 * * *'    # KST 12:00
+    - cron: '0 8 * * *'    # KST 17:00
+  
+  # 수동 실행을 위한 트리거
+  workflow_dispatch:
+    inputs:
+      debug_mode:
+        description: 'Debug mode'
+        required: false
+        default: 'false'
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    
+    - name: Install Chrome
+      uses: browser-actions/setup-chrome@latest
+      with:
+        chrome-version: stable
+    
+    - name: Install ChromeDriver
+      uses: nanasess/setup-chromedriver@v2
+      with:
+        chromedriver-version: '119.0.6045.105'
+    
+    - name: Cache pip packages
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Verify Chrome installation
+      run: |
+        chrome --version
+        chromedriver --version
+    
+    - name: Run crawler
+      env:
+        # 네이버 계정
+        NAVER_ID: ${{ secrets.NAVER_ID }}
+        NAVER_PW: ${{ secrets.NAVER_PW }}
+        
+        # 노션 설정
+        NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+        NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        
+        # 카페 1 설정
+        CAFE1_NAME: ${{ secrets.CAFE1_NAME }}
+        CAFE1_URL: ${{ secrets.CAFE1_URL }}
+        CAFE1_CLUB_ID: ${{ secrets.CAFE1_CLUB_ID }}
+        CAFE1_BOARD_ID: ${{ secrets.CAFE1_BOARD_ID }}
+        CAFE1_BOARD_NAME: ${{ secrets.CAFE1_BOARD_NAME }}
+        
+        # 카페 2 설정
+        CAFE2_NAME: ${{ secrets.CAFE2_NAME }}
+        CAFE2_URL: ${{ secrets.CAFE2_URL }}
+        CAFE2_CLUB_ID: ${{ secrets.CAFE2_CLUB_ID }}
+        CAFE2_BOARD_ID: ${{ secrets.CAFE2_BOARD_ID }}
+        CAFE2_BOARD_NAME: ${{ secrets.CAFE2_BOARD_NAME }}
+        
+        # GitHub Actions 환경 표시
+        GITHUB_ACTIONS: true
+      run: |
+        python main.py
+    
+    - name: Upload logs
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: crawler-logs
+        path: crawler.log
+        retention-days: 7
+    
+    - name: Send notification on failure
+      if: failure()
+      run: |
+        echo "크롤링 실패! 로그를 확인하세요."
+        # 여기에 Slack, Discord, 이메일 등 알림 설정 가능
