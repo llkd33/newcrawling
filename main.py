@@ -160,6 +160,9 @@ class NaverCafeCrawler:
                     class_attr = article.get_attribute('class') or ''
                     if 'notice' in class_attr.lower() or '공지' in class_attr:
                         continue
+                    # 빈 행 제외
+                    if not article.text.strip():
+                        continue
                     actual_articles.append(article)
                 except:
                     actual_articles.append(article)
@@ -280,7 +283,10 @@ class NaverCafeCrawler:
                             if notion_check.check_duplicate(link):
                                 logging.info(f"⏭️ 이미 저장된 게시물: {title[:30]}...")
                                 continue
-                        except:
+                            else:
+                                logging.debug(f"✨ 새 게시물 발견: {title[:30]}...")
+                        except Exception as e:
+                            logging.debug(f"중복 체크 중 오류: {e}")
                             pass
                     
                     # 상세 내용 크롤링
@@ -366,24 +372,42 @@ class NotionDatabase:
         self.client = Client(auth=os.getenv('NOTION_TOKEN'))
         self.database_id = os.getenv('NOTION_DATABASE_ID')
     
-    def check_duplicate(self, hash_value: str) -> bool:
-        """중복 체크"""
+    def check_duplicate(self, url: str) -> bool:
+        """URL로 중복 체크"""
         try:
-            # 해시 필드가 없을 수도 있으므로 URL로 중복 체크
-            response = self.client.databases.query(
-                database_id=self.database_id,
-                filter={
-                    "or": [
-                        {
-                            "property": "URL",
-                            "url": {
-                                "contains": hash_value[:20]  # URL 일부로 체크
-                            }
+            # URL에서 articleid 추출
+            article_id = ""
+            if 'articleid=' in url:
+                article_id = url.split('articleid=')[1].split('&')[0]
+            
+            if article_id:
+                # articleid로 정확한 중복 체크
+                response = self.client.databases.query(
+                    database_id=self.database_id,
+                    filter={
+                        "property": "URL",
+                        "url": {
+                            "contains": f"articleid={article_id}"
                         }
-                    ]
-                }
-            )
-            return len(response['results']) > 0
+                    }
+                )
+            else:
+                # articleid가 없으면 전체 URL로 체크
+                response = self.client.databases.query(
+                    database_id=self.database_id,
+                    filter={
+                        "property": "URL",
+                        "url": {
+                            "equals": url
+                        }
+                    }
+                )
+            
+            is_duplicate = len(response['results']) > 0
+            if is_duplicate:
+                logging.debug(f"중복 확인: {url[:50]}...")
+            return is_duplicate
+            
         except Exception as e:
             logging.debug(f"중복 체크 실패: {e}")
             return False
