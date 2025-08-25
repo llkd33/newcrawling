@@ -105,8 +105,14 @@ class NaverCafeCrawler:
         results = []
         
         try:
+            # URL 검증
+            if not cafe_config.get('url') or not cafe_config.get('club_id') or not cafe_config.get('board_id'):
+                logging.error(f"카페 설정이 올바르지 않습니다: {cafe_config}")
+                return results
+            
             # 카페 게시판 URL로 이동
             board_url = f"{cafe_config['url']}/ArticleList.nhn?search.clubid={cafe_config['club_id']}&search.menuid={cafe_config['board_id']}"
+            logging.info(f"📍 URL 접속: {board_url}")
             self.driver.get(board_url)
             time.sleep(3)
             
@@ -308,23 +314,43 @@ def main():
     logging.info(f"⏰ 실행 시간: {datetime.now()}")
     logging.info("="*60)
     
+    # 환경변수 확인
+    required_env = ['NAVER_ID', 'NAVER_PW', 'NOTION_TOKEN', 'NOTION_DATABASE_ID']
+    missing_env = [env for env in required_env if not os.getenv(env)]
+    
+    if missing_env:
+        logging.error(f"❌ 필수 환경변수가 설정되지 않았습니다: {', '.join(missing_env)}")
+        logging.error("GitHub Secrets를 설정해주세요!")
+        sys.exit(1)
+    
     # 카페 설정 (2곳)
-    cafes = [
-        {
+    cafes = []
+    
+    # 카페 1 설정 확인
+    if os.getenv('CAFE1_URL') and os.getenv('CAFE1_CLUB_ID') and os.getenv('CAFE1_BOARD_ID'):
+        cafes.append({
             'name': os.getenv('CAFE1_NAME', '카페1'),
             'url': os.getenv('CAFE1_URL'),
             'club_id': os.getenv('CAFE1_CLUB_ID'),
             'board_id': os.getenv('CAFE1_BOARD_ID'),
             'board_name': os.getenv('CAFE1_BOARD_NAME', '게시판')
-        },
-        {
+        })
+    
+    # 카페 2 설정 확인
+    if os.getenv('CAFE2_URL') and os.getenv('CAFE2_CLUB_ID') and os.getenv('CAFE2_BOARD_ID'):
+        cafes.append({
             'name': os.getenv('CAFE2_NAME', '카페2'),
             'url': os.getenv('CAFE2_URL'),
             'club_id': os.getenv('CAFE2_CLUB_ID'),
             'board_id': os.getenv('CAFE2_BOARD_ID'),
             'board_name': os.getenv('CAFE2_BOARD_NAME', '게시판')
-        }
-    ]
+        })
+    
+    if not cafes:
+        logging.error("❌ 크롤링할 카페가 설정되지 않았습니다!")
+        logging.error("최소 1개 이상의 카페 정보를 GitHub Secrets에 설정해주세요:")
+        logging.error("CAFE1_URL, CAFE1_CLUB_ID, CAFE1_BOARD_ID")
+        sys.exit(1)
     
     # 크롤러 초기화
     crawler = NaverCafeCrawler()
