@@ -152,8 +152,32 @@ class NaverCafeCrawler:
                     pass
                 return results
             
-            for article in articles[:10]:  # 최신 10개만
+            # 실제 게시물만 필터링 (공지사항 제외)
+            actual_articles = []
+            for article in articles:
                 try:
+                    # 공지사항 클래스 체크
+                    class_attr = article.get_attribute('class') or ''
+                    if 'notice' in class_attr.lower() or '공지' in class_attr:
+                        continue
+                    actual_articles.append(article)
+                except:
+                    actual_articles.append(article)
+            
+            logging.info(f"📊 공지 제외 실제 게시물: {len(actual_articles)}개")
+            
+            # 최대 4개씩만 처리
+            max_articles = 4
+            processed_count = 0
+            
+            for idx, article in enumerate(actual_articles[:10], 1):  # 최신 10개 중에서
+                if processed_count >= max_articles:
+                    logging.info(f"✅ 최대 처리 개수({max_articles}개) 도달")
+                    break
+                    
+                try:
+                    logging.debug(f"처리 중: {processed_count + 1}/{max_articles}")
+                    
                     # 제목 찾기 (여러 방법 시도)
                     title = ""
                     link = ""
@@ -248,6 +272,17 @@ class NaverCafeCrawler:
                     # 게시물 ID 추출
                     article_id = link.split('articleid=')[-1].split('&')[0] if 'articleid=' in link else ""
                     
+                    # URL로 중복 체크 (크롤링 전에 확인)
+                    if link:
+                        # 이미 노션에 있는지 먼저 체크
+                        try:
+                            notion_check = NotionDatabase()
+                            if notion_check.check_duplicate(link):
+                                logging.info(f"⏭️ 이미 저장된 게시물: {title[:30]}...")
+                                continue
+                        except:
+                            pass
+                    
                     # 상세 내용 크롤링
                     content = self.get_article_content(link)
                     
@@ -263,12 +298,15 @@ class NaverCafeCrawler:
                         'cafe_name': cafe_config['name'],
                         'board_name': cafe_config['board_name'],
                         'crawled_at': datetime.now().isoformat(),
-                        'hash': hashlib.md5(f"{title}{content}".encode()).hexdigest()
+                        'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
                     }
                     
                     results.append(data)
-                    logging.info(f"📄 크롤링: {title[:30]}...")
-                    time.sleep(1)  # 요청 간격
+                    processed_count += 1
+                    logging.info(f"📄 [{processed_count:02d}/{max_articles}] 크롤링: {title[:30]}...")
+                    
+                    # 요청 간격
+                    time.sleep(1)
                     
                 except Exception as e:
                     logging.error(f"게시물 크롤링 오류: {e}")
@@ -477,11 +515,13 @@ def main():
             articles = crawler.crawl_cafe(cafe)
             
             # 노션에 저장
+            cafe_saved = 0
             for article in articles:
                 if notion.save_article(article):
+                    cafe_saved += 1
                     total_saved += 1
             
-            logging.info(f"✅ {cafe['name']}: {len(articles)}개 크롤링, {total_saved}개 저장")
+            logging.info(f"✅ {cafe['name']}: {len(articles)}개 크롤링, {cafe_saved}개 새로 저장")
             time.sleep(2)
         
         logging.info(f"\n🎉 크롤링 완료! 총 {total_saved}개 새 게시물 저장")
