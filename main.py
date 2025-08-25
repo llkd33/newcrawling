@@ -294,7 +294,9 @@ class NaverCafeCrawler:
                             new_articles_found += 1
                     
                     # 상세 내용 크롤링
+                    logging.info(f"📖 내용 크롤링 중: {title[:30]}...")
                     content = self.get_article_content(link)
+                    logging.info(f"📝 내용 길이: {len(content)} 글자")
                     
                     # 데이터 구성
                     data = {
@@ -310,6 +312,11 @@ class NaverCafeCrawler:
                         'crawled_at': datetime.now().isoformat(),
                         'hash': hashlib.md5(f"{title}{link}".encode()).hexdigest()
                     }
+                    
+                    # 디버깅 정보
+                    logging.debug(f"데이터 구성 완료:")
+                    logging.debug(f"  - 제목: {data['title'][:50]}")
+                    logging.debug(f"  - 내용: {data['content'][:100]}...")
                     
                     results.append(data)
                     processed_count += 1
@@ -335,47 +342,64 @@ class NaverCafeCrawler:
             # 새 탭에서 열기
             self.driver.execute_script(f"window.open('{url}', '_blank');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
-            time.sleep(3)  # 로딩 대기 시간 증가
+            time.sleep(4)  # 로딩 대기 시간 더 증가
             
             # iframe 전환
             try:
                 self.driver.switch_to.frame('cafe_main')
+                logging.debug("iframe 전환 성공")
             except:
-                logging.debug("iframe 전환 실패")
+                logging.debug("iframe 전환 실패 - 직접 접근 시도")
             
             # 여러 선택자로 본문 내용 찾기
             content = ""
             content_selectors = [
                 'div.se-main-container',  # 스마트 에디터 3
+                'div.ContentRenderer',  # 새 에디터
+                'div#postViewArea',  # 포스트 뷰 영역
+                'div.post-view-content',  # 포스트 뷰 컨텐츠
+                'div#content-area',  # 컨텐츠 영역
                 'div.content-box',  # 일반 에디터
                 'div#tbody',  # 구형 에디터
                 'div.NHN_Writeform_Main',  # 구형 에디터2
                 'div.article-content',  # 신형
+                'div[class*="view_content"]',  # 클래스 패턴
                 'div[id*="post-content"]',  # ID 패턴
-                'div.view-content'  # 뷰 컨텐츠
+                'div.view-content',  # 뷰 컨텐츠
+                'td.view'  # 테이블 기반 구형
             ]
             
             for selector in content_selectors:
                 try:
                     content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     content = content_elem.text.strip()
-                    if content:
-                        logging.debug(f"내용 찾음: {selector}")
+                    if content and len(content) > 50:  # 50자 이상일 때만 유효한 내용으로 판단
+                        logging.info(f"✅ 내용 찾음: {selector} ({len(content)}자)")
                         break
                 except:
                     continue
             
             # 내용이 없으면 body 전체 텍스트 시도
-            if not content:
+            if not content or len(content) < 50:
+                logging.debug("선택자로 내용을 찾지 못함, body 전체 시도")
                 try:
                     body = self.driver.find_element(By.TAG_NAME, 'body')
-                    content = body.text.strip()
-                    # 불필요한 메뉴 텍스트 제거
-                    lines = content.split('\n')
-                    # 실제 내용만 추출 (보통 긴 텍스트)
-                    content_lines = [line for line in lines if len(line) > 50]
-                    content = '\n'.join(content_lines[:20])  # 상위 20줄
-                except:
+                    full_text = body.text.strip()
+                    # 긴 텍스트만 필터링 (50자 이상)
+                    lines = full_text.split('\n')
+                    content_lines = []
+                    for line in lines:
+                        if len(line) > 50 and not any(skip in line for skip in ['카페', '메뉴', '로그인', '검색', '목록']):
+                            content_lines.append(line)
+                    
+                    if content_lines:
+                        content = '\n'.join(content_lines[:15])  # 상위 15줄
+                        logging.info(f"✅ body에서 내용 추출: {len(content)}자")
+                    else:
+                        content = ""
+                        logging.warning("body에서도 유효한 내용을 찾지 못함")
+                except Exception as e:
+                    logging.error(f"body 내용 추출 실패: {e}")
                     content = ""
             
             # 탭 닫기
@@ -462,6 +486,9 @@ class NotionDatabase:
             title_text = article.get('title', '').strip()
             if not title_text:
                 title_text = f"게시물 - {datetime.now().strftime('%Y%m%d%H%M%S')}"
+            
+            logging.info(f"📝 노션 저장 시작: 제목={title_text[:30]}...")
+            logging.debug(f"📄 내용 미리보기: {article.get('content', '')[:100]}...")
             
             # 가능한 Title 필드명들 시도
             title_fields_to_try = [title_field, '새 페이지', 'Name', '이름', '제목', 'Title']
