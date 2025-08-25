@@ -424,12 +424,22 @@ class NotionDatabase:
             # 필드 타입을 정확히 맞춰야 함
             properties = {}
             
-            # 제목 필드 - 노션 DB의 실제 Title 필드명 사용
-            # 에러 메시지에서 "하윗트 어워드 판매(스위트,Goh,클럽)"가 Title 필드인 것으로 보임
-            title_field = "하윗트 어워드 판매(스위트,Goh,클럽)"  # 실제 Title 필드명
-            properties[title_field] = {
-                "title": [{"text": {"content": article['title']}}]
-            }
+            # 제목 필드 - 환경변수로 설정 가능, 기본값은 "Name"
+            title_field = os.getenv('NOTION_TITLE_FIELD', 'Name')
+            try:
+                properties[title_field] = {
+                    "title": [{"text": {"content": article['title']}}]
+                }
+            except:
+                # Title 필드가 없으면 일반적인 필드명들 시도
+                for field_name in ['Name', '이름', '제목', 'Title']:
+                    try:
+                        properties[field_name] = {
+                            "title": [{"text": {"content": article['title']}}]
+                        }
+                        break
+                    except:
+                        continue
             
             # URL 필드
             if article.get('url'):

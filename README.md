@@ -58,6 +58,7 @@ NAVER_PW: 네이버 비밀번호
 # 노션 설정
 NOTION_TOKEN: secret_로 시작하는 Integration 토큰
 NOTION_DATABASE_ID: 데이터베이스 ID
+NOTION_TITLE_FIELD: Name (노션 DB의 Title 필드명, 보통 'Name')
 
 # 카페 1
 CAFE1_NAME: 첫 번째 카페 이름

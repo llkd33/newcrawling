@@ -64,6 +64,7 @@ jobs:
         # 노션 설정
         NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
         NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+        NOTION_TITLE_FIELD: ${{ secrets.NOTION_TITLE_FIELD }}
         
         # 카페 1 설정
         CAFE1_NAME: ${{ secrets.CAFE1_NAME }}
