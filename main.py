@@ -454,22 +454,32 @@ class NotionDatabase:
             # 필드 타입을 정확히 맞춰야 함
             properties = {}
             
-            # 제목 필드 - 환경변수로 설정 가능, 기본값은 "Name"
-            title_field = os.getenv('NOTION_TITLE_FIELD', 'Name')
-            try:
-                properties[title_field] = {
-                    "title": [{"text": {"content": article['title']}}]
-                }
-            except:
-                # Title 필드가 없으면 일반적인 필드명들 시도
-                for field_name in ['Name', '이름', '제목', 'Title']:
-                    try:
-                        properties[field_name] = {
-                            "title": [{"text": {"content": article['title']}}]
-                        }
-                        break
-                    except:
-                        continue
+            # 제목 필드 - 환경변수로 설정 가능, 기본값은 "새 페이지"
+            # 노션의 기본 Title 필드명은 언어 설정에 따라 다름
+            title_field = os.getenv('NOTION_TITLE_FIELD', '새 페이지')
+            
+            # 제목이 비어있지 않도록 확인
+            title_text = article.get('title', '').strip()
+            if not title_text:
+                title_text = f"게시물 - {datetime.now().strftime('%Y%m%d%H%M%S')}"
+            
+            # 가능한 Title 필드명들 시도
+            title_fields_to_try = [title_field, '새 페이지', 'Name', '이름', '제목', 'Title']
+            title_set = False
+            
+            for field_name in title_fields_to_try:
+                try:
+                    properties[field_name] = {
+                        "title": [{"text": {"content": title_text}}]
+                    }
+                    title_set = True
+                    logging.debug(f"제목 필드 설정 성공: {field_name}")
+                    break
+                except:
+                    continue
+            
+            if not title_set:
+                logging.error("제목 필드를 설정할 수 없습니다")
             
             # URL 필드
             if article.get('url'):
@@ -502,11 +512,18 @@ class NotionDatabase:
                     }
             
             # 내용 (Rich Text)
-            content = article.get('content', '')[:2000]
-            if content:
-                properties["내용"] = {
-                    "rich_text": [{"text": {"content": content}}]
-                }
+            content = article.get('content', '').strip()
+            if not content or content == "내용을 가져올 수 없습니다.":
+                # 내용이 없으면 최소한 제목과 URL 정보라도 포함
+                content = f"제목: {title_text}\n\nURL: {article.get('url', '')}\n\n(본문 내용을 가져올 수 없습니다)"
+            
+            # 노션 Rich Text 제한 (2000자)
+            content = content[:2000]
+            
+            # 내용 필드 설정
+            properties["내용"] = {
+                "rich_text": [{"text": {"content": content}}]
+            }
             
             # 크롤링 일시 (Date)
             try:
@@ -530,7 +547,83 @@ class NotionDatabase:
                 properties=properties
             )
             
-            logging.info(f"✅ 노션 저장 성공: {article['title'][:30]}...")
+            # 페이지 내용 추가 (블록으로)
+            try:
+                # 페이지 본문에 상세 내용 추가
+                blocks = []
+                
+                # 제목 블록
+                blocks.append({
+                    "object": "block",
+                    "type": "heading_1",
+                    "heading_1": {
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {"content": title_text}
+                        }]
+                    }
+                })
+                
+                # 정보 블록
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {"content": f"📅 작성일: {article.get('date', 'N/A')}\n👤 작성자: {article.get('author', 'Unknown')}\n📊 조회수: {article.get('views', '0')}"}
+                        }]
+                    }
+                })
+                
+                # 구분선
+                blocks.append({
+                    "object": "block",
+                    "type": "divider",
+                    "divider": {}
+                })
+                
+                # 본문 내용
+                if content and content != "내용을 가져올 수 없습니다.":
+                    # 내용을 단락으로 나누기
+                    paragraphs = content.split('\n\n')
+                    for para in paragraphs[:10]:  # 최대 10개 단락
+                        if para.strip():
+                            blocks.append({
+                                "object": "block",
+                                "type": "paragraph",
+                                "paragraph": {
+                                    "rich_text": [{
+                                        "type": "text",
+                                        "text": {"content": para.strip()[:2000]}
+                                    }]
+                                }
+                            })
+                
+                # 원본 링크
+                blocks.append({
+                    "object": "block",
+                    "type": "paragraph",
+                    "paragraph": {
+                        "rich_text": [{
+                            "type": "text",
+                            "text": {
+                                "content": "🔗 원본 게시물 보기",
+                                "link": {"url": article.get('url', '')}
+                            }
+                        }]
+                    }
+                })
+                
+                # 블록 추가
+                self.client.blocks.children.append(
+                    block_id=page["id"],
+                    children=blocks
+                )
+            except Exception as e:
+                logging.debug(f"페이지 내용 추가 중 오류 (무시): {e}")
+            
+            logging.info(f"✅ 노션 저장 성공: {title_text[:30]}...")
             return True
             
         except Exception as e:
