@@ -91,7 +91,7 @@ class NaverCafeCrawler:
             # 로그인 버튼 클릭
             login_btn = self.driver.find_element(By.ID, 'log.login')
             login_btn.click()
-            time.sleep(3)
+            time.sleep(5)  # 로그인 대기 시간 증가
             
             logging.info("✅ 네이버 로그인 성공")
             return True
@@ -117,40 +117,118 @@ class NaverCafeCrawler:
             time.sleep(3)
             
             # iframe 전환
-            self.driver.switch_to.frame('cafe_main')
-            time.sleep(1)
+            try:
+                self.driver.switch_to.frame('cafe_main')
+                time.sleep(1)
+            except:
+                logging.warning("iframe 전환 실패, 직접 접근 시도")
             
-            # 게시물 목록 가져오기
-            articles = self.driver.find_elements(By.CSS_SELECTOR, 'div.article-board tr')
+            # 여러 선택자 시도 (네이버 카페 구조가 다양함)
+            selectors = [
+                'div.article-board table tbody tr',  # 구형 카페
+                'ul.article-movie-sub li',  # 영화형
+                'div.ArticleListItem',  # 새형 카페
+                'tr[class*="board-list"]',  # 일반 리스트
+                'div.inner_list > a'  # 모바일형
+            ]
+            
+            articles = []
+            for selector in selectors:
+                try:
+                    articles = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if articles:
+                        logging.info(f"✅ 게시물 발견: {selector} ({len(articles)}개)")
+                        break
+                except:
+                    continue
+            
+            if not articles:
+                logging.warning("❌ 게시물을 찾을 수 없습니다. HTML 구조 확인 필요")
+                # HTML 디버깅 정보
+                try:
+                    page_source = self.driver.page_source[:500]
+                    logging.debug(f"Page HTML: {page_source}")
+                except:
+                    pass
+                return results
             
             for article in articles[:10]:  # 최신 10개만
                 try:
-                    # 공지사항 제외
-                    if 'board-notice' in article.get_attribute('class') or '':
+                    # 제목 찾기 (여러 방법 시도)
+                    title = ""
+                    link = ""
+                    
+                    # 방법 1: a.article
+                    try:
+                        title_elem = article.find_element(By.CSS_SELECTOR, 'a.article')
+                        title = title_elem.text.strip()
+                        link = title_elem.get_attribute('href')
+                    except:
+                        pass
+                    
+                    # 방법 2: td.td_article
+                    if not title:
+                        try:
+                            title_elem = article.find_element(By.CSS_SELECTOR, 'td.td_article a')
+                            title = title_elem.text.strip()
+                            link = title_elem.get_attribute('href')
+                        except:
+                            pass
+                    
+                    # 방법 3: class="inner_list"
+                    if not title:
+                        try:
+                            title_elem = article.find_element(By.CSS_SELECTOR, '.inner_list a')
+                            title = title_elem.text.strip()
+                            link = title_elem.get_attribute('href')
+                        except:
+                            pass
+                    
+                    # 방법 4: 직접 a 태그
+                    if not title:
+                        try:
+                            title_elem = article.find_element(By.TAG_NAME, 'a')
+                            title = title_elem.text.strip()
+                            link = title_elem.get_attribute('href')
+                        except:
+                            continue
+                    
+                    if not title or not link:
                         continue
                     
-                    # 제목과 링크
-                    title_elem = article.find_element(By.CSS_SELECTOR, 'a.article')
-                    title = title_elem.text.strip()
-                    link = title_elem.get_attribute('href')
+                    # 공지사항 제외
+                    if '공지' in title or 'notice' in str(article.get_attribute('class')):
+                        continue
                     
                     # 작성자
-                    try:
-                        author = article.find_element(By.CSS_SELECTOR, 'td.td_name a').text.strip()
-                    except:
-                        author = "Unknown"
+                    author = "Unknown"
+                    for author_selector in ['td.td_name a', '.td_name', '.nick', '.p-nick']:
+                        try:
+                            author = article.find_element(By.CSS_SELECTOR, author_selector).text.strip()
+                            if author:
+                                break
+                        except:
+                            pass
                     
                     # 작성일
-                    try:
-                        date = article.find_element(By.CSS_SELECTOR, 'td.td_date').text.strip()
-                    except:
-                        date = datetime.now().strftime('%Y.%m.%d.')
+                    date = datetime.now().strftime('%Y.%m.%d.')
+                    for date_selector in ['td.td_date', '.td_date', '.date']:
+                        try:
+                            date = article.find_element(By.CSS_SELECTOR, date_selector).text.strip()
+                            if date:
+                                break
+                        except:
+                            pass
                     
                     # 조회수
-                    try:
-                        views = article.find_element(By.CSS_SELECTOR, 'td.td_view').text.strip()
-                    except:
-                        views = "0"
+                    views = "0"
+                    for view_selector in ['td.td_view', '.td_view', '.view']:
+                        try:
+                            views = article.find_element(By.CSS_SELECTOR, view_selector).text.strip()
+                            if views:
+                                break
+                        except:
+                            pass
                     
                     # 게시물 ID 추출
                     article_id = link.split('articleid=')[-1].split('&')[0] if 'articleid=' in link else ""
