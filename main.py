@@ -172,8 +172,10 @@ class NaverCafeCrawler:
             # 최대 4개씩만 처리
             max_articles = 4
             processed_count = 0
+            new_articles_found = 0
             
-            for idx, article in enumerate(actual_articles[:10], 1):  # 최신 10개 중에서
+            # 더 많은 게시물 확인 (새 게시물 4개 찾을 때까지)
+            for idx, article in enumerate(actual_articles[:20], 1):  # 최신 20개 확인
                 if processed_count >= max_articles:
                     logging.info(f"✅ 최대 처리 개수({max_articles}개) 도달")
                     break
@@ -281,13 +283,15 @@ class NaverCafeCrawler:
                         try:
                             notion_check = NotionDatabase()
                             if notion_check.check_duplicate(link):
-                                logging.info(f"⏭️ 이미 저장된 게시물: {title[:30]}...")
+                                logging.info(f"⏭️ [{idx:02d}] 이미 저장된 게시물: {title[:30]}...")
                                 continue
                             else:
-                                logging.debug(f"✨ 새 게시물 발견: {title[:30]}...")
+                                new_articles_found += 1
+                                logging.info(f"✨ [{new_articles_found:02d}] 새 게시물 발견: {title[:30]}...")
                         except Exception as e:
                             logging.debug(f"중복 체크 중 오류: {e}")
-                            pass
+                            # 오류 시에도 계속 진행
+                            new_articles_found += 1
                     
                     # 상세 내용 크롤링
                     content = self.get_article_content(link)
@@ -331,20 +335,46 @@ class NaverCafeCrawler:
             # 새 탭에서 열기
             self.driver.execute_script(f"window.open('{url}', '_blank');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
-            time.sleep(2)
+            time.sleep(3)  # 로딩 대기 시간 증가
             
             # iframe 전환
-            self.driver.switch_to.frame('cafe_main')
-            
-            # 본문 내용 추출
-            content = ""
             try:
-                content_elem = self.driver.find_element(By.CSS_SELECTOR, 'div.se-main-container, div.content-box')
-                content = content_elem.text.strip()
+                self.driver.switch_to.frame('cafe_main')
             except:
+                logging.debug("iframe 전환 실패")
+            
+            # 여러 선택자로 본문 내용 찾기
+            content = ""
+            content_selectors = [
+                'div.se-main-container',  # 스마트 에디터 3
+                'div.content-box',  # 일반 에디터
+                'div#tbody',  # 구형 에디터
+                'div.NHN_Writeform_Main',  # 구형 에디터2
+                'div.article-content',  # 신형
+                'div[id*="post-content"]',  # ID 패턴
+                'div.view-content'  # 뷰 컨텐츠
+            ]
+            
+            for selector in content_selectors:
                 try:
-                    content_elem = self.driver.find_element(By.CSS_SELECTOR, 'div#tbody')
+                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     content = content_elem.text.strip()
+                    if content:
+                        logging.debug(f"내용 찾음: {selector}")
+                        break
+                except:
+                    continue
+            
+            # 내용이 없으면 body 전체 텍스트 시도
+            if not content:
+                try:
+                    body = self.driver.find_element(By.TAG_NAME, 'body')
+                    content = body.text.strip()
+                    # 불필요한 메뉴 텍스트 제거
+                    lines = content.split('\n')
+                    # 실제 내용만 추출 (보통 긴 텍스트)
+                    content_lines = [line for line in lines if len(line) > 50]
+                    content = '\n'.join(content_lines[:20])  # 상위 20줄
                 except:
                     content = ""
             
@@ -352,7 +382,7 @@ class NaverCafeCrawler:
             self.driver.close()
             self.driver.switch_to.window(self.driver.window_handles[0])
             
-            return content[:2000]  # 노션 제한
+            return content[:2000] if content else "내용을 가져올 수 없습니다."  # 노션 제한
             
         except Exception as e:
             logging.error(f"내용 추출 오류: {e}")
