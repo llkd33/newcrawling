@@ -338,78 +338,154 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """게시물 상세 내용 가져오기"""
+        content = ""
+        
         try:
-            # 새 탭에서 열기
+            # 현재 창 핸들 저장
+            original_window = self.driver.current_window_handle
+            
+            # 새 탭에서 게시물 열기
             self.driver.execute_script(f"window.open('{url}', '_blank');")
             self.driver.switch_to.window(self.driver.window_handles[-1])
-            time.sleep(4)  # 로딩 대기 시간 더 증가
             
-            # iframe 전환
+            # 페이지 완전히 로딩 대기
+            time.sleep(5)
+            
+            # iframe으로 전환 (네이버 카페는 iframe 사용)
             try:
                 self.driver.switch_to.frame('cafe_main')
-                logging.debug("iframe 전환 성공")
-            except:
-                logging.debug("iframe 전환 실패 - 직접 접근 시도")
-            
-            # 여러 선택자로 본문 내용 찾기
-            content = ""
-            content_selectors = [
-                'div.se-main-container',  # 스마트 에디터 3
-                'div.ContentRenderer',  # 새 에디터
-                'div#postViewArea',  # 포스트 뷰 영역
-                'div.post-view-content',  # 포스트 뷰 컨텐츠
-                'div#content-area',  # 컨텐츠 영역
-                'div.content-box',  # 일반 에디터
-                'div#tbody',  # 구형 에디터
-                'div.NHN_Writeform_Main',  # 구형 에디터2
-                'div.article-content',  # 신형
-                'div[class*="view_content"]',  # 클래스 패턴
-                'div[id*="post-content"]',  # ID 패턴
-                'div.view-content',  # 뷰 컨텐츠
-                'td.view'  # 테이블 기반 구형
-            ]
-            
-            for selector in content_selectors:
+                logging.info("✅ iframe 전환 성공")
+                
+                # 스크립트로 직접 내용 가져오기 시도
                 try:
-                    content_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    content = content_elem.text.strip()
-                    if content and len(content) > 50:  # 50자 이상일 때만 유효한 내용으로 판단
-                        logging.info(f"✅ 내용 찾음: {selector} ({len(content)}자)")
-                        break
-                except:
-                    continue
-            
-            # 내용이 없으면 body 전체 텍스트 시도
-            if not content or len(content) < 50:
-                logging.debug("선택자로 내용을 찾지 못함, body 전체 시도")
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, 'body')
-                    full_text = body.text.strip()
-                    # 긴 텍스트만 필터링 (50자 이상)
-                    lines = full_text.split('\n')
-                    content_lines = []
-                    for line in lines:
-                        if len(line) > 50 and not any(skip in line for skip in ['카페', '메뉴', '로그인', '검색', '목록']):
-                            content_lines.append(line)
+                    # 방법 1: 스마트에디터 ONE (최신)
+                    content = self.driver.execute_script("""
+                        var elem = document.querySelector('.se-main-container');
+                        if (elem) return elem.innerText;
+                        return '';
+                    """)
                     
-                    if content_lines:
-                        content = '\n'.join(content_lines[:15])  # 상위 15줄
-                        logging.info(f"✅ body에서 내용 추출: {len(content)}자")
-                    else:
-                        content = ""
-                        logging.warning("body에서도 유효한 내용을 찾지 못함")
-                except Exception as e:
-                    logging.error(f"body 내용 추출 실패: {e}")
-                    content = ""
+                    if content and len(content) > 30:
+                        logging.info(f"✅ 스마트에디터 ONE에서 내용 추출: {len(content)}자")
+                        self.driver.close()
+                        self.driver.switch_to.window(original_window)
+                        return content[:2000]
+                    
+                    # 방법 2: ContentRenderer (새 렌더러)
+                    content = self.driver.execute_script("""
+                        var elem = document.querySelector('.ContentRenderer');
+                        if (elem) return elem.innerText;
+                        return '';
+                    """)
+                    
+                    if content and len(content) > 30:
+                        logging.info(f"✅ ContentRenderer에서 내용 추출: {len(content)}자")
+                        self.driver.close()
+                        self.driver.switch_to.window(original_window)
+                        return content[:2000]
+                    
+                    # 방법 3: 일반 게시글 영역
+                    content = self.driver.execute_script("""
+                        var selectors = [
+                            '#postViewArea',
+                            '#content-area',
+                            '.post_ct',
+                            '#tbody',
+                            '.NHN_Writeform_Main',
+                            'div[class*="view_content"]',
+                            '.article_viewer',
+                            '.board-view-content'
+                        ];
+                        
+                        for (var i = 0; i < selectors.length; i++) {
+                            var elem = document.querySelector(selectors[i]);
+                            if (elem && elem.innerText && elem.innerText.length > 30) {
+                                return elem.innerText;
+                            }
+                        }
+                        return '';
+                    """)
+                    
+                    if content and len(content) > 30:
+                        logging.info(f"✅ 일반 선택자에서 내용 추출: {len(content)}자")
+                        self.driver.close()
+                        self.driver.switch_to.window(original_window)
+                        return content[:2000]
+                    
+                    # 방법 4: 모든 텍스트 노드 수집
+                    content = self.driver.execute_script("""
+                        // 제목, 작성자 정보 등을 제외한 본문만 추출
+                        var bodyArea = document.querySelector('td.view, div.view_content, div#content-area');
+                        if (bodyArea) {
+                            // 불필요한 요소 제거
+                            var removes = bodyArea.querySelectorAll('.reply, .comment, script, style');
+                            removes.forEach(function(el) { el.remove(); });
+                            return bodyArea.innerText;
+                        }
+                        
+                        // 못 찾으면 body 전체에서 긴 텍스트 찾기
+                        var allText = [];
+                        var paragraphs = document.querySelectorAll('p, div');
+                        for (var i = 0; i < paragraphs.length; i++) {
+                            var text = paragraphs[i].innerText || '';
+                            if (text.length > 100 && !text.includes('로그인') && !text.includes('메뉴')) {
+                                allText.push(text);
+                            }
+                        }
+                        return allText.join('\\n\\n');
+                    """)
+                    
+                    if content and len(content) > 30:
+                        logging.info(f"✅ 텍스트 노드 수집으로 내용 추출: {len(content)}자")
+                        
+                except Exception as js_error:
+                    logging.error(f"JavaScript 실행 오류: {js_error}")
+                    
+                    # JavaScript 실패 시 기존 방법으로 시도
+                    selectors = [
+                        'div.se-main-container',
+                        'div.ContentRenderer', 
+                        '#postViewArea',
+                        '#content-area',
+                        'td.view',
+                        '#tbody'
+                    ]
+                    
+                    for selector in selectors:
+                        try:
+                            elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                            content = elem.text.strip()
+                            if content and len(content) > 30:
+                                logging.info(f"✅ Selenium으로 내용 추출: {selector} ({len(content)}자)")
+                                break
+                        except:
+                            continue
+                
+            except Exception as iframe_error:
+                logging.error(f"iframe 처리 오류: {iframe_error}")
+                # iframe 없이 시도
+                content = self.driver.execute_script("return document.body.innerText;")
             
             # 탭 닫기
             self.driver.close()
-            self.driver.switch_to.window(self.driver.window_handles[0])
+            self.driver.switch_to.window(original_window)
             
-            return content[:2000] if content else "내용을 가져올 수 없습니다."  # 노션 제한
-            
+            # 내용 검증
+            if content and len(content) > 30:
+                # 불필요한 공백 정리
+                content = '\n'.join(line.strip() for line in content.split('\n') if line.strip())
+                return content[:2000]
+            else:
+                logging.warning(f"내용 추출 실패 - URL: {url}")
+                return ""
+                
         except Exception as e:
-            logging.error(f"내용 추출 오류: {e}")
+            logging.error(f"게시물 내용 크롤링 실패: {e}")
+            try:
+                self.driver.close()
+                self.driver.switch_to.window(self.driver.window_handles[0])
+            except:
+                pass
             return ""
     
     def close(self):
@@ -540,9 +616,10 @@ class NotionDatabase:
             
             # 내용 (Rich Text)
             content = article.get('content', '').strip()
-            if not content or content == "내용을 가져올 수 없습니다.":
-                # 내용이 없으면 최소한 제목과 URL 정보라도 포함
-                content = f"제목: {title_text}\n\nURL: {article.get('url', '')}\n\n(본문 내용을 가져올 수 없습니다)"
+            if not content:
+                # 내용이 비어있으면 다시 시도하지 않고 빈 값으로 처리
+                content = "(내용을 불러오는 중...)"
+                logging.warning(f"내용이 비어있음: {title_text}")
             
             # 노션 Rich Text 제한 (2000자)
             content = content[:2000]
