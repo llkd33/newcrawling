@@ -138,30 +138,29 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """
-        게시물 내용 가져오기 - 혁신적인 JavaScript 실행 방식
+        게시물 내용 가져오기 - iframe 컨텍스트 안전 관리
         """
         try:
-            logging.info(f"🚀 JavaScript 기반 내용 추출 시작: {url}")
+            logging.info(f"🚀 내용 추출 시작: {url}")
             
-            # 게시물 페이지로 이동
-            self.driver.get(url)
-            time.sleep(8)  # 충분한 로딩 시간
+            # 현재 URL이 이미 게시물 페이지인지 확인
+            current_url = self.driver.current_url
+            if url not in current_url:
+                # 다른 페이지라면 이동
+                self.driver.get(url)
+                time.sleep(5)
             
             # 로그인 체크
             if 'nid.naver.com' in self.driver.current_url:
                 if self.login_naver():
                     self.driver.get(url)
-                    time.sleep(8)
+                    time.sleep(5)
                 else:
                     return "로그인 필요"
             
-            # iframe 전환
-            try:
-                self.wait.until(EC.frame_to_be_available_and_switch_to_it('cafe_main'))
-                time.sleep(5)
-                logging.info("✅ iframe 전환 성공")
-            except:
-                logging.warning("⚠️ iframe 전환 실패")
+            # iframe 전환 (이미 전환되어 있을 수도 있음)
+            if not self.switch_to_cafe_iframe():
+                logging.warning("⚠️ iframe 전환 실패, 메인 페이지에서 시도")
             
             # 페이지 완전 로딩 대기
             time.sleep(3)
@@ -170,33 +169,141 @@ class NaverCafeCrawler:
             logging.info(f"🔍 현재 URL: {self.driver.current_url}")
             logging.info(f"🔍 페이지 제목: {self.driver.title}")
             
-            # JavaScript로 직접 내용 추출
-            content = self._extract_with_javascript()
-            
-            # iframe에서 나오기
-            try:
-                self.driver.switch_to.default_content()
-            except:
-                pass
+            # 강화된 내용 추출
+            content = self._extract_content_enhanced()
             
             if content and len(content.strip()) > 10:
-                # JavaScript 오류 메시지 체크
-                if "We're sorry but web-pc doesn't work properly" in content:
-                    logging.warning("⚠️ JavaScript 오류 메시지 감지, 대체 방법 시도")
-                    content = self._extract_with_alternative_method()
-                
                 logging.info(f"✅ 내용 추출 성공: {len(content)}자")
                 return content[:1500]
             else:
-                return "내용 추출 실패"
+                logging.warning("⚠️ 내용 추출 실패 또는 내용이 너무 짧음")
+                return f"내용을 불러올 수 없습니다.\n원본 링크: {url}"
                 
         except Exception as e:
-            logging.error(f"❌ JavaScript 추출 오류: {e}")
-            try:
-                self.driver.switch_to.default_content()
-            except:
-                pass
-            return f"추출 오류: {str(e)[:50]}"
+            logging.error(f"❌ 내용 추출 오류: {e}")
+            return f"추출 오류: {str(e)[:50]}\n원본 링크: {url}"
+    
+    def _extract_content_enhanced(self) -> str:
+        """
+        강화된 내용 추출 - 다양한 에디터 형식 지원
+        """
+        try:
+            # JavaScript로 통합 추출
+            js_extract_content = """
+            var content = [];
+            
+            // 방법 1: SmartEditor 3.0 (se-main-container)
+            var seMainContainer = document.querySelector('.se-main-container');
+            if (seMainContainer) {
+                var paragraphs = seMainContainer.querySelectorAll('p.se-text-paragraph, .se-component, .se-text');
+                for (var p of paragraphs) {
+                    var text = p.innerText || p.textContent;
+                    if (text && text.trim().length > 3) {
+                        content.push(text.trim());
+                    }
+                }
+            }
+            
+            // 방법 2: SmartEditor 2.0 (ContentRenderer)
+            if (content.length === 0) {
+                var contentRenderer = document.querySelector('.ContentRenderer, #postViewArea');
+                if (contentRenderer) {
+                    var text = contentRenderer.innerText || contentRenderer.textContent;
+                    if (text && text.trim().length > 10) {
+                        content.push(text.trim());
+                    }
+                }
+            }
+            
+            // 방법 3: 일반 에디터 (#content-area, .article_viewer)
+            if (content.length === 0) {
+                var selectors = ['#content-area', '.article_viewer', '.post-content', '.article-content', '#tbody'];
+                for (var sel of selectors) {
+                    var elem = document.querySelector(sel);
+                    if (elem) {
+                        var text = elem.innerText || elem.textContent;
+                        if (text && text.trim().length > 10) {
+                            content.push(text.trim());
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // 방법 4: 모든 텍스트 노드 수집 (최후의 수단)
+            if (content.length === 0) {
+                var walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: function(node) {
+                            var text = node.textContent.trim();
+                            var parent = node.parentElement;
+                            
+                            // 부모 요소 체크
+                            if (parent) {
+                                var tagName = parent.tagName.toLowerCase();
+                                var className = parent.className || '';
+                                
+                                // 제외할 요소들
+                                if (tagName === 'script' || tagName === 'style' || 
+                                    className.includes('menu') || className.includes('nav') ||
+                                    className.includes('footer') || className.includes('header')) {
+                                    return NodeFilter.FILTER_REJECT;
+                                }
+                            }
+                            
+                            // 텍스트 내용 체크
+                            if (text.length > 5 && 
+                                !text.includes('javascript') && 
+                                !text.includes('로그인') &&
+                                !text.includes('NAVER') &&
+                                !text.includes('메뉴') &&
+                                !text.includes('댓글')) {
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                    }
+                );
+                
+                var textNodes = [];
+                var node;
+                while (node = walker.nextNode()) {
+                    textNodes.push(node.textContent.trim());
+                }
+                
+                if (textNodes.length > 0) {
+                    content = textNodes.slice(0, 15); // 처음 15개만
+                }
+            }
+            
+            // 중복 제거 및 정리
+            var uniqueContent = [];
+            var seen = new Set();
+            
+            for (var text of content) {
+                if (text && text.length > 3 && !seen.has(text)) {
+                    seen.add(text);
+                    uniqueContent.push(text);
+                }
+            }
+            
+            return uniqueContent.join('\\n\\n');
+            """
+            
+            result = self.driver.execute_script(js_extract_content)
+            
+            if result and len(result.strip()) > 10:
+                logging.info(f"✅ 강화된 JavaScript 추출 성공: {len(result)}자")
+                return result
+            
+            # 폴백: 기존 방식
+            return self._extract_with_javascript()
+            
+        except Exception as e:
+            logging.error(f"❌ 강화된 추출 실패: {e}")
+            return self._extract_with_javascript()
     
     def _extract_with_javascript(self) -> str:
         """JavaScript를 사용한 직접 DOM 조작"""
@@ -699,345 +806,93 @@ class NaverCafeCrawler:
             logging.error(f"❌ 최후 수단도 실패: {e}")
             return f"[시스템 오류]\n\n게시물 링크: {url}\n\n오류: {str(e)[:100]}"
     
+    def switch_to_cafe_iframe(self):
+        """카페 iframe으로 안전하게 전환"""
+        try:
+            self.driver.switch_to.default_content()
+            self.wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, 'cafe_main')))
+            time.sleep(2)
+            return True
+        except Exception as e:
+            logging.warning(f"iframe 전환 실패: {e}")
+            return False
+    
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
-        """카페 게시물 크롤링"""
+        """카페 게시물 크롤링 - StaleElement 문제 해결된 버전"""
         results = []
         
         try:
-            # 카페 게시판 접속 - F-E 카페 URL 구조에 맞춤
+            # 1단계: 카페 게시판 접속
             if cafe_config['name'] == 'F-E 카페':
-                # F-E 카페 전용 URL 구조
                 board_url = f"{cafe_config['url']}/cafes/{cafe_config['club_id']}/menus/{cafe_config['board_id']}?viewType=L"
             else:
-                # 일반 카페 URL 구조
                 board_url = f"{cafe_config['url']}/ArticleList.nhn?search.clubid={cafe_config['club_id']}&search.menuid={cafe_config['board_id']}"
+            
             logging.info(f"📍 URL 접속: {board_url}")
             self.driver.get(board_url)
             time.sleep(5)
             
-            # iframe 전환
-            try:
-                self.driver.switch_to.frame('cafe_main')
-                time.sleep(2)
-            except:
-                logging.warning("iframe 전환 실패")
-            
-            # 게시물 찾기 - 새로운 네이버 카페 구조 지원
-            articles = []
-            selectors = [
-                # 새로운 네이버 카페 구조 (제공해주신 HTML 구조)
-                'div.inner_list',
-                '.inner_list',
-                # 기존 구조들
-                'div.article-board table tbody tr',
-                'ul.article-movie-sub li',
-                'div.ArticleListItem',
-                # 추가 가능한 구조들
-                '.article-list .item',
-                '.board-list .item',
-                'li[data-article-id]'
-            ]
-            
-            for selector in selectors:
-                try:
-                    articles = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                    if articles:
-                        logging.info(f"✅ 게시물 발견 (선택자: {selector}): {len(articles)}개")
-                        break
-                except:
-                    continue
-            
-            if not articles:
-                logging.warning("게시물을 찾을 수 없습니다")
+            # 2단계: iframe 전환
+            if not self.switch_to_cafe_iframe():
+                logging.error("❌ iframe 전환 실패, 크롤링 중단")
                 return results
             
-            # 공지 제외 및 유효한 게시물만 필터링
-            actual_articles = []
-            for idx, article in enumerate(articles):
-                try:
-                    is_notice = False
-                    has_valid_link = False
-                    
-                    # 1. 클래스 기반 공지 확인
-                    try:
-                        cls = (article.get_attribute('class') or '').lower()
-                        if 'notice' in cls or 'announcement' in cls:
-                            is_notice = True
-                    except:
-                        pass
-
-                    # 2. 시각적 아이콘/표시 기반 공지 확인
-                    if not is_notice:
-                        try:
-                            notice_indicators = article.find_elements(By.CSS_SELECTOR, 
-                                'img[alt="공지"], img[alt="notice"], .notice, .icon_notice, .board-notice, .ArticleList__notice, .notice-icon')
-                            if notice_indicators:
-                                is_notice = True
-                        except:
-                            pass
-
-                    # 3. 유효한 게시물 링크 확인
-                    try:
-                        valid_links = article.find_elements(By.CSS_SELECTOR, 'a[href*="articles"], a[href*="articleid"]')
-                        for link in valid_links:
-                            href = link.get_attribute('href')
-                            text = link.text.strip()
-                            if href and text and len(text) > 2 and ('articles/' in href or 'articleid=' in href):
-                                has_valid_link = True
-                                break
-                    except:
-                        pass
-
-                    # 4. 제목 텍스트 기반 공지 확인
-                    if not is_notice and has_valid_link:
-                        try:
-                            # 제목 셀에서 공지 확인
-                            title_cells = article.find_elements(By.CSS_SELECTOR, 'td.td_article, .td_article, .title, .subject')
-                            for cell in title_cells:
-                                title_text = cell.text.strip()
-                                if (title_text and 
-                                    ('공지' in title_text or '[공지]' in title_text or 
-                                     title_text.startswith('공지') or '공지사항' in title_text)):
-                                    is_notice = True
-                                    break
-                        except:
-                            pass
-
-                    # 5. 분류 셀에서 공지 확인
-                    if not is_notice:
-                        try:
-                            category_cells = article.find_elements(By.CSS_SELECTOR, 'td:first-child, .category, .board-category')
-                            for cell in category_cells:
-                                category_text = cell.text.strip()
-                                if category_text and ('공지' in category_text or 'notice' in category_text.lower()):
-                                    is_notice = True
-                                    break
-                        except:
-                            pass
-
-                    # 유효한 게시물만 추가 (공지가 아니고 유효한 링크가 있는 경우)
-                    if not is_notice and has_valid_link:
-                        actual_articles.append(article)
-                    elif is_notice:
-                        logging.debug(f"공지사항 제외: {idx+1}번째 항목")
-                    else:
-                        logging.debug(f"유효하지 않은 게시물 제외: {idx+1}번째 항목")
-                        
-                except Exception as e:
-                    logging.debug(f"게시물 필터링 중 오류 (항목 {idx+1}): {e}")
-                    # 오류 시에는 제외 (안전한 방향으로)
+            logging.info("✅ iframe 전환 성공")
             
-            logging.info(f"📊 공지 제외 실제 게시물: {len(actual_articles)}개")
+            # 3단계: 게시물 URL을 문자열로 모두 수집 (StaleElement 방지)
+            article_data_list = self._collect_article_urls_safely(cafe_config)
             
-            # 최대 10개 처리 (실제 운영용)
+            if not article_data_list:
+                logging.warning("⚠️ 수집된 게시물 URL이 없습니다")
+                return results
+            
+            logging.info(f"📊 수집된 게시물: {len(article_data_list)}개")
+            
+            # 4단계: 각 게시물을 개별적으로 처리 (매번 새로 접근)
             max_articles = 10
             processed = 0
             
-            # 게시물 처리 - 더 견고한 방식
-            for i, article in enumerate(actual_articles[:20]):
+            for i, article_data in enumerate(article_data_list[:20]):
                 if processed >= max_articles:
                     logging.info(f"🎯 목표 달성: {processed}개 처리 완료")
                     break
                 
                 try:
-                    logging.info(f"🔄 [{i+1}/{len(actual_articles[:20])}] 게시물 처리 중...")
+                    logging.info(f"🔄 [{i+1}/{len(article_data_list[:20])}] 게시물 처리 중...")
                     
-                    # 제목과 링크 추출
-                    title = ""
-                    link = ""
+                    # 게시물 페이지로 직접 이동
+                    self.driver.get(article_data['url'])
+                    time.sleep(3)
                     
-                    # F-E 카페 전용 링크 및 작성자 추출 - 개선된 JavaScript 사용
-                    try:
-                        js_extract_link = f"""
-                        var result = null;
-                        
-                        // 방법 1: 테이블 기반 게시판 (가장 일반적)
-                        var tableRows = document.querySelectorAll('table tr, .board-list tr, .article-board tr');
-                        if (tableRows.length > {i}) {{
-                            var row = tableRows[{i}];
-                            var titleCell = row.querySelector('td.td_article, .td_article, .title, .subject');
-                            var authorCell = row.querySelector('td.p-nick, .td_name, .author, .writer, .nickname');
-                            
-                            if (titleCell) {{
-                                var link = titleCell.querySelector('a[href*="articles"], a[href*="articleid"]');
-                                if (link) {{
-                                    var text = link.innerText || link.textContent;
-                                    var author = '';
-                                    
-                                    // 작성자 추출
-                                    if (authorCell) {{
-                                        var authorSpan = authorCell.querySelector('span.nickname, .nickname, span');
-                                        if (authorSpan) {{
-                                            author = authorSpan.innerText || authorSpan.textContent;
-                                        }} else {{
-                                            author = authorCell.innerText || authorCell.textContent;
-                                        }}
-                                    }}
-                                    
-                                    if (text && text.trim().length > 2) {{
-                                        result = {{
-                                            title: text.trim(),
-                                            url: link.href,
-                                            author: author ? author.trim() : 'Unknown'
-                                        }};
-                                    }}
-                                }}
-                            }}
-                        }}
-                        
-                        // 방법 2: 리스트 기반 게시판
-                        if (!result) {{
-                            var listItems = document.querySelectorAll('.article-list li, .board-list li, ul li');
-                            if (listItems.length > {i}) {{
-                                var item = listItems[{i}];
-                                var link = item.querySelector('a[href*="articles"], a[href*="articleid"]');
-                                var authorElem = item.querySelector('.nickname, .author, .writer, span.nickname');
-                                
-                                if (link) {{
-                                    var text = link.innerText || link.textContent;
-                                    var author = '';
-                                    
-                                    if (authorElem) {{
-                                        author = authorElem.innerText || authorElem.textContent;
-                                    }}
-                                    
-                                    if (text && text.trim().length > 2) {{
-                                        result = {{
-                                            title: text.trim(),
-                                            url: link.href,
-                                            author: author ? author.trim() : 'Unknown'
-                                        }};
-                                    }}
-                                }}
-                            }}
-                        }}
-                        
-                        // 방법 3: 모든 게시물 링크에서 순서대로 찾기
-                        if (!result) {{
-                            var allLinks = document.querySelectorAll('a[href*="articles"], a[href*="articleid"]');
-                            var validLinks = [];
-                            
-                            for (var j = 0; j < allLinks.length; j++) {{
-                                var link = allLinks[j];
-                                var text = link.innerText || link.textContent;
-                                var href = link.href;
-                                
-                                // 공지사항이나 광고 제외
-                                if (text && text.trim().length > 2 && 
-                                    !text.includes('공지') && 
-                                    !text.includes('AD') &&
-                                    !text.includes('광고') &&
-                                    (href.includes('articles/') || href.includes('articleid='))) {{
-                                    
-                                    // 같은 행에서 작성자 찾기
-                                    var author = '';
-                                    var parentRow = link.closest('tr, li, div');
-                                    if (parentRow) {{
-                                        var authorElem = parentRow.querySelector('.nickname, .author, .writer, span.nickname, td.p-nick, .td_name');
-                                        if (authorElem) {{
-                                            author = authorElem.innerText || authorElem.textContent;
-                                        }}
-                                    }}
-                                    
-                                    validLinks.push({{
-                                        title: text.trim(),
-                                        url: href,
-                                        author: author ? author.trim() : 'Unknown'
-                                    }});
-                                }}
-                            }}
-                            
-                            if (validLinks.length > {i}) {{
-                                result = validLinks[{i}];
-                            }}
-                        }}
-                        
-                        return result;
-                        """
-                        
-                        js_result = self.driver.execute_script(js_extract_link)
-                        
-                        if js_result and js_result.get('title') and js_result.get('url'):
-                            title = js_result['title']
-                            link = js_result['url']
-                            author = js_result.get('author', 'Unknown')
-                            logging.info(f"✅ JavaScript 링크 추출 성공: {title[:50]} (작성자: {author})")
-                        else:
-                            # 폴백: Selenium 기반 방식
-                            selectors = [
-                                'td.td_article a[href*="articles"]',
-                                'td.td_article a[href*="articleid"]',
-                                '.title a[href*="articles"]',
-                                '.subject a[href*="articles"]',
-                                'a[href*="articles"]',
-                                'a[href*="articleid"]'
-                            ]
-                            
-                            for selector in selectors:
-                                try:
-                                    link_elem = article.find_element(By.CSS_SELECTOR, selector)
-                                    title = link_elem.text.strip()
-                                    link = link_elem.get_attribute('href')
-                                    
-                                    if title and link and len(title) > 2:
-                                        logging.info(f"✅ Selenium 링크 추출 성공: {title[:50]}")
-                                        break
-                                except:
-                                    continue
-                    except Exception as e:
-                        logging.error(f"❌ JavaScript 링크 추출 오류: {e}")
+                    # 매번 iframe 재전환
+                    if not self.switch_to_cafe_iframe():
+                        logging.warning(f"⚠️ [{i+1}] iframe 재전환 실패, 건너뜀")
                         continue
                     
-                    # 기본 검증
-                    if not title or not link:
-                        logging.warning(f"⚠️ [{i+1}] 제목 또는 링크 없음, 건너뜀 (title: {bool(title)}, link: {bool(link)})")
-                        continue
-                    
-                    # 추가 공지사항 필터링 (이중 체크)
-                    if ('공지' in title or '[공지]' in title or 
-                        title.startswith('공지') or '공지사항' in title or 
-                        len(title) < 3):
-                        logging.warning(f"⚠️ [{i+1}] 공지 또는 제목 부적절: {title[:30]}")
-                        continue
-                    
-                    # URL 정리
-                    if link.endswith('#'):
-                        link = link[:-1]
-                    if link.startswith('/'):
-                        link = 'https://cafe.naver.com' + link
+                    # 제목, 작성자, 내용 추출
+                    title = article_data.get('title', '제목 없음')
+                    author = article_data.get('author', 'Unknown')
                     
                     logging.info(f"📝 [{i+1}] 처리 시작: {title[:50]}...")
-                    logging.info(f"🔗 [{i+1}] URL: {link}")
+                    logging.info(f"🔗 [{i+1}] URL: {article_data['url']}")
                     logging.info(f"👤 [{i+1}] 작성자: {author}")
                     
                     # 내용 추출
                     try:
-                        content = self.get_article_content(link)
+                        content = self.get_article_content(article_data['url'])
                         if content and len(content.strip()) > 10:
                             logging.info(f"📄 [{i+1}] 내용 길이: {len(content)}자")
                         else:
                             logging.warning(f"⚠️ [{i+1}] 내용이 너무 짧음: {len(content) if content else 0}자")
-                            content = f"내용을 불러올 수 없습니다.\n원본 링크: {link}"
+                            content = f"내용을 불러올 수 없습니다.\n원본 링크: {article_data['url']}"
                     except Exception as content_error:
                         logging.error(f"❌ [{i+1}] 내용 추출 오류: {content_error}")
-                        content = f"내용 추출 중 오류 발생: {str(content_error)[:100]}\n원본 링크: {link}"
+                        content = f"내용 추출 중 오류 발생: {str(content_error)[:100]}\n원본 링크: {article_data['url']}"
                     
-                    # 작성자 추출 - 게시물 목록에서 이미 추출된 경우 사용
-                    if 'author' not in locals() or not author or author == "Unknown":
-                        # JavaScript 방식으로 재시도
-                        author = self._extract_author_with_javascript(link)
-                        if not author or author == "Unknown":
-                            # 폴백: 게시물 목록에서 추출
-                            try:
-                                author_elem = article.find_element(By.CSS_SELECTOR, 'td.td_name, .name, .author, .nickname')
-                                author = author_elem.text.strip() or "Unknown"
-                            except:
-                                author = "Unknown"
-                    
-                    # 작성일 추출
+                    # 작성일 추출 (현재 페이지에서)
                     date_str = datetime.now().strftime('%Y-%m-%d')
                     try:
-                        date_elem = article.find_element(By.CSS_SELECTOR, 'td.td_date, .date, .time')
+                        date_elem = self.driver.find_element(By.CSS_SELECTOR, '.date, .time, .write_date, .article_date')
                         date_text = date_elem.text.strip()
                         if date_text:
                             date_str = date_text.replace('.', '-').rstrip('-')
@@ -1049,8 +904,8 @@ class NaverCafeCrawler:
                         'title': title,
                         'author': author,
                         'date': date_str,
-                        'url': link,
-                        'article_id': link.split('/')[-1].split('?')[0],
+                        'url': article_data['url'],
+                        'article_id': article_data.get('article_id', ''),
                         'content': content,
                         'cafe_name': cafe_config['name'],
                         'crawled_at': datetime.now().isoformat()
@@ -1065,17 +920,230 @@ class NaverCafeCrawler:
                     
                 except Exception as e:
                     logging.error(f"❌ [{i+1}] 게시물 처리 오류: {e}")
-                    # 오류가 발생해도 다음 게시물 계속 처리
                     continue
             
-            logging.info(f"🎯 게시물 처리 완료: {processed}개 성공 (전체 {len(actual_articles)}개 중)")
-            
-            self.driver.switch_to.default_content()
+            logging.info(f"🎯 게시물 처리 완료: {processed}개 성공 (전체 {len(article_data_list)}개 중)")
             
         except Exception as e:
-            logging.error(f"크롤링 오류: {e}")
+            logging.error(f"❌ 크롤링 오류: {e}")
         
         return results
+            
+    def _collect_article_urls_safely(self, cafe_config: Dict) -> List[Dict]:
+        """
+        게시물 URL을 안전하게 문자열로 수집 (StaleElement 방지)
+        """
+        try:
+            # JavaScript로 모든 게시물 정보를 한 번에 수집
+            js_collect_articles = f"""
+            const baseUrl = location.origin;
+            const pathParts = location.pathname.split('/');
+            const cafeId = pathParts[2]; // f-e
+            const clubId = '{cafe_config['club_id']}';
+            const menuId = '{cafe_config['board_id']}';
+            
+            function buildArticleUrl(articleId) {{
+                return `${{baseUrl}}/f-e/cafes/${{clubId}}/articles/${{articleId}}?boardtype=L&menuid=${{menuId}}&referrerAllArticles=false`;
+            }}
+            
+            const articles = [];
+            
+            // 방법 1: div.inner_list 구조 (새로운 네이버 카페)
+            const innerListItems = document.querySelectorAll('div.inner_list');
+            for (const item of innerListItems) {{
+                try {{
+                    const link = item.querySelector('a.article, a[href*="articles"]');
+                    if (!link) continue;
+                    
+                    let articleId = '';
+                    let url = '';
+                    let title = '';
+                    let author = '';
+                    
+                    // URL에서 articleId 추출
+                    const href = link.getAttribute('href') || '';
+                    const match = href.match(/articles\/(\d+)/);
+                    if (match) {{
+                        articleId = match[1];
+                        url = buildArticleUrl(articleId);
+                    }} else {{
+                        // onclick에서 추출 시도
+                        const onclick = link.getAttribute('onclick') || '';
+                        const onclickMatch = onclick.match(/articles\/(\d+)/) || onclick.match(/ArticleRead[^0-9]*([0-9]+)/i);
+                        if (onclickMatch) {{
+                            articleId = onclickMatch[1];
+                            url = buildArticleUrl(articleId);
+                        }} else {{
+                            url = href.startsWith('http') ? href : baseUrl + href;
+                        }}
+                    }}
+                    
+                    // 제목 추출
+                    title = link.innerText || link.textContent || '';
+                    title = title.replace(/\\[.*?\\]/g, '').trim(); // [팝니다] 같은 태그 제거
+                    
+                    // 작성자 추출 (같은 행에서)
+                    const parentRow = item.closest('tr, li, div');
+                    if (parentRow) {{
+                        const authorElem = parentRow.querySelector('.nickname, span.nickname, .author, .writer, .nick, td.p-nick, .td_name');
+                        if (authorElem) {{
+                            author = authorElem.innerText || authorElem.textContent || '';
+                        }}
+                    }}
+                    
+                    // 공지사항 필터링
+                    const isNotice = (
+                        title.includes('공지') || 
+                        title.includes('[공지]') || 
+                        title.startsWith('공지') ||
+                        item.querySelector('.notice, .icon_notice, img[alt="공지"]') ||
+                        item.classList.contains('notice')
+                    );
+                    
+                    if (!isNotice && title.length > 2 && url) {{
+                        articles.push({{
+                            title: title.trim(),
+                            url: url,
+                            author: author.trim() || 'Unknown',
+                            article_id: articleId
+                        }});
+                    }}
+                }} catch (e) {{
+                    console.log('게시물 처리 중 오류:', e);
+                }}
+            }}
+            
+            // 방법 2: 테이블 구조 (기존 네이버 카페)
+            if (articles.length === 0) {{
+                const tableRows = document.querySelectorAll('table tr, .board-list tr, .article-board tr');
+                for (const row of tableRows) {{
+                    try {{
+                        const titleCell = row.querySelector('td.td_article, .td_article, .title, .subject');
+                        const authorCell = row.querySelector('td.p-nick, .td_name, .author, .writer, .nickname');
+                        
+                        if (!titleCell) continue;
+                        
+                        const link = titleCell.querySelector('a[href*="articles"], a[href*="articleid"]');
+                        if (!link) continue;
+                        
+                        let title = link.innerText || link.textContent || '';
+                        let author = '';
+                        let url = link.href || '';
+                        let articleId = '';
+                        
+                        // articleId 추출
+                        const match = url.match(/articles\/(\d+)/) || url.match(/articleid=(\d+)/);
+                        if (match) {{
+                            articleId = match[1];
+                        }}
+                        
+                        // 작성자 추출
+                        if (authorCell) {{
+                            const authorSpan = authorCell.querySelector('span.nickname, .nickname, span');
+                            if (authorSpan) {{
+                                author = authorSpan.innerText || authorSpan.textContent || '';
+                            }} else {{
+                                author = authorCell.innerText || authorCell.textContent || '';
+                            }}
+                        }}
+                        
+                        // 공지사항 필터링
+                        const isNotice = (
+                            title.includes('공지') || 
+                            title.includes('[공지]') || 
+                            title.startsWith('공지') ||
+                            row.querySelector('.notice, .icon_notice, img[alt="공지"]') ||
+                            row.classList.contains('notice')
+                        );
+                        
+                        if (!isNotice && title.length > 2 && url) {{
+                            articles.push({{
+                                title: title.trim(),
+                                url: url,
+                                author: author.trim() || 'Unknown',
+                                article_id: articleId
+                            }});
+                        }}
+                    }} catch (e) {{
+                        console.log('테이블 행 처리 중 오류:', e);
+                    }}
+                }}
+            }}
+            
+            return articles;
+            """
+            
+            article_data_list = self.driver.execute_script(js_collect_articles)
+            
+            if article_data_list:
+                logging.info(f"✅ JavaScript로 게시물 수집 성공: {len(article_data_list)}개")
+                
+                # 수집된 데이터 로깅
+                for i, article in enumerate(article_data_list[:5]):  # 처음 5개만 로깅
+                    logging.info(f"  [{i+1}] {article['title'][:30]}... (작성자: {article['author']})")
+                
+                return article_data_list
+            else:
+                logging.warning("⚠️ JavaScript 수집 실패, 폴백 방식 시도")
+                return self._collect_articles_fallback()
+                
+        except Exception as e:
+            logging.error(f"❌ 게시물 URL 수집 중 오류: {e}")
+            return self._collect_articles_fallback()
+    
+    def _collect_articles_fallback(self) -> List[Dict]:
+        """
+        폴백 방식으로 게시물 수집
+        """
+        try:
+            articles = []
+            
+            # 기본 선택자들로 시도
+            selectors = [
+                'div.inner_list',
+                '.inner_list', 
+                'table tr',
+                '.board-list tr',
+                '.article-board tr'
+            ]
+            
+            for selector in selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        logging.info(f"폴백: {selector}로 {len(elements)}개 요소 발견")
+                        
+                        for i, elem in enumerate(elements[:20]):  # 최대 20개만
+                            try:
+                                # 링크 찾기
+                                link_elem = elem.find_element(By.CSS_SELECTOR, 'a[href*="articles"], a[href*="articleid"]')
+                                title = link_elem.text.strip()
+                                url = link_elem.get_attribute('href')
+                                
+                                if title and url and len(title) > 2:
+                                    # 공지사항 체크
+                                    if not ('공지' in title or '[공지]' in title or title.startswith('공지')):
+                                        articles.append({{
+                                            'title': title,
+                                            'url': url,
+                                            'author': 'Unknown',
+                                            'article_id': url.split('/')[-1].split('?')[0]
+                                        }})
+                            except:
+                                continue
+                        
+                        if articles:
+                            break
+                            
+                except:
+                    continue
+            
+            logging.info(f"폴백 방식으로 {len(articles)}개 게시물 수집")
+            return articles
+            
+        except Exception as e:
+            logging.error(f"❌ 폴백 수집도 실패: {e}")
+            return []
     
     def close(self):
         """드라이버 종료"""
