@@ -147,17 +147,87 @@ class NaverCafeCrawler:
             # 새로운 ContentExtractor 사용
             result = self.content_extractor.extract_content(url)
             
-            if result.success:
+            if result.success and result.content and len(result.content.strip()) > 50:
+                # JavaScript 오류 메시지 체크
+                if "We're sorry but web-pc doesn't work properly" in result.content:
+                    logging.warning("⚠️ JavaScript 오류 메시지 감지, 폴백 시도")
+                    return self._fallback_content_extraction(url)
+                
                 logging.info(f"✅ 내용 추출 성공: {len(result.content)}자 (방법: {result.extraction_method.value}, 품질: {result.quality_score:.2f})")
                 return result.content
             else:
-                logging.warning(f"⚠️ 내용 추출 실패: {result.error_message}")
-                return result.content  # 실패 시에도 기본 메시지 반환
+                logging.warning(f"⚠️ 내용 추출 실패 또는 내용 부족: {result.error_message}")
+                return self._fallback_content_extraction(url)
                 
         except Exception as e:
             logging.error(f"❌ ContentExtractor 사용 중 오류: {e}")
-            # 기존 방식으로 폴백 (안전장치)
-            return f"내용을 불러올 수 없습니다.\n원본 링크: {url}"
+            return self._fallback_content_extraction(url)
+    
+    def _fallback_content_extraction(self, url: str) -> str:
+        """폴백 내용 추출 방법"""
+        try:
+            logging.info(f"🔧 폴백 내용 추출 시도: {url}")
+            
+            # 현재 페이지로 이동
+            self.driver.get(url)
+            time.sleep(5)
+            
+            # iframe 전환 시도
+            try:
+                self.driver.switch_to.frame('cafe_main')
+                time.sleep(3)
+            except:
+                pass
+            
+            # 다양한 선택자로 내용 추출 시도
+            content_selectors = [
+                '.se-main-container',
+                '.se-component',
+                '#content-area',
+                '.article_viewer',
+                '.article-board-content',
+                '.content_text',
+                '.post-content',
+                '.board-content'
+            ]
+            
+            for selector in content_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        content = elements[0].text.strip()
+                        if content and len(content) > 30:
+                            logging.info(f"✅ 폴백 추출 성공: {len(content)}자 (선택자: {selector})")
+                            return content
+                except:
+                    continue
+            
+            # 최후 수단: body 전체에서 추출
+            try:
+                body = self.driver.find_element(By.TAG_NAME, 'body')
+                content = body.text.strip()
+                if content and len(content) > 100:
+                    # 불필요한 텍스트 제거
+                    lines = content.split('\n')
+                    filtered_lines = []
+                    for line in lines:
+                        line = line.strip()
+                        if line and not any(skip in line.lower() for skip in ['javascript', 'cookie', 'privacy', 'terms']):
+                            filtered_lines.append(line)
+                    
+                    filtered_content = '\n'.join(filtered_lines[:20])  # 처음 20줄만
+                    if len(filtered_content) > 50:
+                        logging.info(f"✅ 최후 수단 추출 성공: {len(filtered_content)}자")
+                        return filtered_content
+            except:
+                pass
+            
+            self.driver.switch_to.default_content()
+            return f"[내용 추출 실패]\n\n게시물 링크: {url}\n\n수동으로 확인이 필요합니다."
+            
+        except Exception as e:
+            logging.error(f"❌ 폴백 추출 실패: {e}")
+            return f"[내용 추출 실패]\n\n게시물 링크: {url}\n\n오류: {str(e)}"
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
         """카페 게시물 크롤링"""
@@ -265,23 +335,49 @@ class NaverCafeCrawler:
                     break
                 
                 try:
-                    # 제목과 링크
+                    # 제목과 링크 - 더 정확한 선택자 사용
                     link_elem = None
-                    for sel in ['a.article', 'td.td_article a', 'a']:
+                    title = ""
+                    link = ""
+                    
+                    # F-E 카페와 일반 카페 구분하여 처리
+                    if cafe_config['name'] == 'F-E 카페':
+                        # F-E 카페 전용 선택자
                         try:
-                            link_elem = article.find_element(By.CSS_SELECTOR, sel)
-                            break
+                            link_elem = article.find_element(By.CSS_SELECTOR, 'a[href*="articles"]')
+                            title = link_elem.text.strip()
+                            link = link_elem.get_attribute('href')
                         except:
-                            continue
+                            try:
+                                # 대체 선택자
+                                link_elem = article.find_element(By.CSS_SELECTOR, 'a')
+                                title = link_elem.text.strip()
+                                link = link_elem.get_attribute('href')
+                            except:
+                                continue
+                    else:
+                        # 일반 카페 선택자
+                        for sel in ['a.article', 'td.td_article a', 'a[href*="articleid"]', 'a']:
+                            try:
+                                link_elem = article.find_element(By.CSS_SELECTOR, sel)
+                                title = link_elem.text.strip()
+                                link = link_elem.get_attribute('href')
+                                if link and ('articleid=' in link or 'articles/' in link):
+                                    break
+                            except:
+                                continue
                     
-                    if not link_elem:
-                        continue
-                    
-                    title = link_elem.text.strip()
-                    link = link_elem.get_attribute('href')
-                    
+                    # 유효성 검사
                     if not title or not link or '공지' in title:
                         continue
+                    
+                    # URL 정리 (잘못된 URL 형식 수정)
+                    if link.endswith('#'):
+                        link = link[:-1]
+                    
+                    # 상대 URL을 절대 URL로 변환
+                    if link.startswith('/'):
+                        link = 'https://cafe.naver.com' + link
                     
                     # 중복 체크 (임시 비활성화 - 테스트용)
                     article_id = link.split('articleid=')[-1].split('&')[0] if 'articleid=' in link else ""
@@ -502,7 +598,7 @@ def main():
         logging.error(f"❌ 환경변수 누락: {', '.join(missing)}")
         sys.exit(1)
     
-    # 카페 설정 - 실제 F-E 카페 정보로 업데이트
+    # 카페 설정 - F-E 카페만 크롤링
     cafes = []
     
     # F-E 카페 설정 (제공된 정보 기반)
@@ -513,22 +609,19 @@ def main():
         'board_id': '105'
     })
     
-    # 환경변수로 추가 카페 설정 가능
-    if os.getenv('CAFE1_URL'):
-        cafes.append({
-            'name': os.getenv('CAFE1_NAME', '카페1'),
-            'url': os.getenv('CAFE1_URL'),
-            'club_id': os.getenv('CAFE1_CLUB_ID'),
-            'board_id': os.getenv('CAFE1_BOARD_ID')
-        })
+    # 추가 카페는 환경변수가 명시적으로 설정된 경우에만 추가
+    # 현재는 F-E 카페만 크롤링하므로 주석 처리
+    # if os.getenv('CAFE1_URL') and os.getenv('CAFE1_CLUB_ID') and os.getenv('CAFE1_BOARD_ID'):
+    #     cafes.append({
+    #         'name': os.getenv('CAFE1_NAME', '카페1'),
+    #         'url': os.getenv('CAFE1_URL'),
+    #         'club_id': os.getenv('CAFE1_CLUB_ID'),
+    #         'board_id': os.getenv('CAFE1_BOARD_ID')
+    #     })
     
-    if os.getenv('CAFE2_URL'):
-        cafes.append({
-            'name': os.getenv('CAFE2_NAME', '카페2'),
-            'url': os.getenv('CAFE2_URL'),
-            'club_id': os.getenv('CAFE2_CLUB_ID'),
-            'board_id': os.getenv('CAFE2_BOARD_ID')
-        })
+    logging.info(f"📋 설정된 카페 수: {len(cafes)}개")
+    for i, cafe in enumerate(cafes, 1):
+        logging.info(f"  {i}. {cafe['name']} (ID: {cafe['club_id']}, Board: {cafe['board_id']})")
     
     if not cafes:
         logging.error("❌ 카페 설정 없음")
