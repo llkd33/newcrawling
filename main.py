@@ -9,6 +9,7 @@ import sys
 import time
 import logging
 from datetime import datetime
+import re
 from typing import List, Dict
 from dotenv import load_dotenv
 import hashlib
@@ -19,6 +20,10 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.chrome.options import Options
 from notion_client import Client
+
+# 새로운 콘텐츠 추출 시스템 import
+from content_extractor import ContentExtractor
+from content_extraction_models import ExtractionConfig
 
 # 환경변수 로드
 load_dotenv()
@@ -39,6 +44,7 @@ class NaverCafeCrawler:
     def __init__(self):
         self.driver = None
         self.wait = None
+        self.content_extractor = None
         self.setup_driver()
         
     def setup_driver(self):
@@ -63,7 +69,19 @@ class NaverCafeCrawler:
         try:
             self.driver = webdriver.Chrome(options=options)
             self.wait = WebDriverWait(self.driver, 15)
-            logging.info("✅ 크롬 드라이버 초기화 성공")
+            
+            # 새로운 콘텐츠 추출기 초기화
+            extraction_config = ExtractionConfig(
+                timeout_seconds=int(os.getenv('CONTENT_EXTRACTION_TIMEOUT', '30')),
+                min_content_length=int(os.getenv('CONTENT_MIN_LENGTH', '30')),
+                max_content_length=int(os.getenv('CONTENT_MAX_LENGTH', '2000')),
+                retry_count=int(os.getenv('EXTRACTION_RETRY_COUNT', '3')),
+                enable_debug_screenshot=os.getenv('DEBUG_SCREENSHOT_ENABLED', 'true').lower() == 'true'
+            )
+            
+            self.content_extractor = ContentExtractor(self.driver, self.wait, extraction_config)
+            
+            logging.info("✅ 크롬 드라이버 및 콘텐츠 추출기 초기화 성공")
         except Exception as e:
             logging.error(f"❌ 드라이버 초기화 실패: {e}")
             raise
@@ -119,227 +137,40 @@ class NaverCafeCrawler:
             return False
     
     def get_article_content(self, url: str) -> str:
-        """게시물 내용 가져오기 - 최종 버전"""
+        """
+        게시물 내용 가져오기 - 새로운 ContentExtractor 사용
+        기존의 복잡한 로직을 모듈화된 시스템으로 교체
+        """
         try:
-            # 새 탭에서 열기
-            original_window = self.driver.current_window_handle
-            self.driver.execute_script(f"window.open('{url}', '_blank');")
-            self.driver.switch_to.window(self.driver.window_handles[-1])
+            logging.info(f"📖 새로운 ContentExtractor로 내용 추출: {url}")
             
-            # 페이지 로딩 대기
-            # Ensure document is ready
-            for _ in range(10):
-                try:
-                    ready = self.driver.execute_script('return document.readyState')
-                    if ready == 'complete':
-                        break
-                    time.sleep(1)
-                except:
-                    time.sleep(1)
-            time.sleep(3)
+            # 새로운 ContentExtractor 사용
+            result = self.content_extractor.extract_content(url)
             
-            # iframe 전환
-            try:
-                WebDriverWait(self.driver, 15).until(
-                    EC.frame_to_be_available_and_switch_to_it((By.NAME, 'cafe_main'))
-                )
-                logging.info("✅ iframe 전환 성공")
-                time.sleep(2)
-            except Exception:
-                logging.warning("⚠️ iframe 전환 실패")
-            
-            # 내용 추출 시도
-            content = ""
-            
-            # 방법 1: SmartEditor 전용 파서 우선 시도
-            try:
-                # SmartEditor 컨테이너 대기
-                WebDriverWait(self.driver, 8).until(
-                    lambda d: len(d.find_elements(By.CSS_SELECTOR, '.se-main-container')) > 0
-                )
-            except Exception:
-                pass
-
-            try:
-                se_container = None
-                se_candidates = self.driver.find_elements(By.CSS_SELECTOR, '.se-main-container')
-                if se_candidates:
-                    se_container = se_candidates[0]
-                    # 문단 텍스트 추출
-                    paragraphs = se_container.find_elements(By.CSS_SELECTOR, '.se-text-paragraph')
-                    text_parts = []
-                    for p in paragraphs:
-                        t = (p.text or '').strip()
-                        if not t:
-                            continue
-                        # 제로폭 문자 제거
-                        t = t.replace('\u200b', '').replace('\ufeff', '').replace('​', '')
-                        if t:
-                            text_parts.append(t)
-
-                    # 이미지 링크 추출 (상위 5개)
-                    img_urls = []
-                    try:
-                        imgs = se_container.find_elements(By.CSS_SELECTOR, 'img')
-                        seen = set()
-                        for img in imgs:
-                            src = (img.get_attribute('src') or '').strip()
-                            if not src:
-                                continue
-                            if src in seen:
-                                continue
-                            seen.add(src)
-                            img_urls.append(src)
-                            if len(img_urls) >= 5:
-                                break
-                    except:
-                        pass
-
-                    se_text = '\n'.join(text_parts).strip()
-                    if se_text and len(se_text) > 20 and "doesn't work properly without JavaScript" not in se_text:
-                        content = se_text
-                        # 이미지 URL을 꼬리말로 첨부
-                        if img_urls:
-                            content += "\n\n[이미지 링크]\n" + '\n'.join(img_urls)
-                        logging.info(f"✅ SmartEditor에서 내용 추출: {len(content)}자")
-            except Exception:
-                pass
-
-            # 방법 2: 모든 가능한 선택자로 시도
-            selectors = [
-                '.se-main-container',
-                '.ContentRenderer',
-                '#postViewArea',
-                '.NHN_Writeform_Main',
-                '#content-area',
-                'div[id="content-area"]',
-                '.post_content',
-                '.view_content',
-                '#tbody',
-                'td[id="tbody"]',
-                '.article_viewer',
-                '.board-view-content',
-                'div.content_box'
-            ]
-            
-            # Wait until one of the content selectors appears
-            try:
-                WebDriverWait(self.driver, 15).until(
-                    lambda d: any([len(d.find_elements(By.CSS_SELECTOR, s)) > 0 for s in selectors])
-                )
-            except Exception:
-                pass
-
-            # Try to read from selectors, retry if we hit web-pc JS-disabled placeholder
-            if not content:
-                for selector in selectors:
-                    try:
-                        elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                        text = elem.text.strip()
-                        if text:
-                            # Detect SPA placeholder complaining about disabled JS
-                            if "doesn't work properly without JavaScript" in text:
-                                logging.info("⏳ JS 렌더링 대기 후 재시도")
-                                time.sleep(3)
-                                self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                                time.sleep(2)
-                                text = elem.text.strip()
-                            if text and len(text) > 20 and "doesn't work properly without JavaScript" not in text:
-                                content = text
-                                logging.info(f"✅ {selector}에서 내용 발견: {len(text)}자")
-                                break
-                    except Exception:
-                        continue
-            
-            # 방법 3: JavaScript로 강제 추출
-            if not content:
-                try:
-                    js_content = self.driver.execute_script("""
-                        // 모든 div 검색
-                        var divs = document.querySelectorAll('div');
-                        var maxText = '';
-                        var maxLen = 0;
-                        
-                        for (var i = 0; i < divs.length; i++) {
-                            var text = divs[i].innerText || divs[i].textContent || '';
-                            // 메뉴, 댓글 등 제외
-                            if (text.length > maxLen && 
-                                text.length > 50 && 
-                                !text.includes('로그인') &&
-                                !text.includes('댓글') &&
-                                !text.includes('메뉴')) {
-                                maxLen = text.length;
-                                maxText = text;
-                            }
-                        }
-                        
-                        // 못 찾으면 body 전체
-                        if (!maxText) {
-                            maxText = document.body.innerText || document.body.textContent || '';
-                        }
-                        
-                        return maxText;
-                    """)
-                    
-                    if js_content and len(js_content) > 20 and "doesn't work properly without JavaScript" not in js_content:
-                        content = js_content
-                        logging.info(f"✅ JavaScript로 내용 추출: {len(content)}자")
-                except:
-                    pass
-
-            # 방법 4: 특정 태그들 시도
-            if not content:
-                try:
-                    # p 태그들 모으기
-                    paragraphs = self.driver.find_elements(By.TAG_NAME, 'p')
-                    texts = []
-                    for p in paragraphs:
-                        text = p.text.strip()
-                        if text and len(text) > 10:
-                            texts.append(text)
-                    if texts:
-                        content = '\n'.join(texts)
-                        logging.info(f"✅ p 태그에서 내용 추출: {len(content)}자")
-                except:
-                    pass
-            
-            # 탭 닫기
-            self.driver.close()
-            self.driver.switch_to.window(original_window)
-            
-            # 결과 정리
-            if content and len(content) > 20:
-                # 불필요한 텍스트 제거
-                lines = content.split('\n')
-                filtered = []
-                for line in lines:
-                    line = line.strip()
-                    if line and not any(skip in line for skip in ['로그인', '메뉴', '목록', '이전글', '다음글']):
-                        filtered.append(line)
-                
-                content = '\n'.join(filtered)[:2000]
-                return content
+            if result.success:
+                logging.info(f"✅ 내용 추출 성공: {len(result.content)}자 (방법: {result.extraction_method.value}, 품질: {result.quality_score:.2f})")
+                return result.content
             else:
-                logging.warning(f"⚠️ 내용 추출 실패: {url}")
-                # 최소한 URL이라도 반환
-                return f"내용을 불러올 수 없습니다.\n원본 링크: {url}"
+                logging.warning(f"⚠️ 내용 추출 실패: {result.error_message}")
+                return result.content  # 실패 시에도 기본 메시지 반환
                 
         except Exception as e:
-            logging.error(f"❌ 내용 크롤링 오류: {e}")
-            try:
-                self.driver.close()
-                self.driver.switch_to.window(self.driver.window_handles[0])
-            except:
-                pass
-            return "(내용을 불러올 수 없습니다)"
+            logging.error(f"❌ ContentExtractor 사용 중 오류: {e}")
+            # 기존 방식으로 폴백 (안전장치)
+            return f"내용을 불러올 수 없습니다.\n원본 링크: {url}"
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
         """카페 게시물 크롤링"""
         results = []
         
         try:
-            # 카페 게시판 접속
-            board_url = f"{cafe_config['url']}/ArticleList.nhn?search.clubid={cafe_config['club_id']}&search.menuid={cafe_config['board_id']}"
+            # 카페 게시판 접속 - F-E 카페 URL 구조에 맞춤
+            if cafe_config['name'] == 'F-E 카페':
+                # F-E 카페 전용 URL 구조
+                board_url = f"{cafe_config['url']}/cafes/{cafe_config['club_id']}/menus/{cafe_config['board_id']}?viewType=L"
+            else:
+                # 일반 카페 URL 구조
+                board_url = f"{cafe_config['url']}/ArticleList.nhn?search.clubid={cafe_config['club_id']}&search.menuid={cafe_config['board_id']}"
             logging.info(f"📍 URL 접속: {board_url}")
             self.driver.get(board_url)
             time.sleep(5)
@@ -425,8 +256,8 @@ class NaverCafeCrawler:
             
             logging.info(f"📊 공지 제외 실제 게시물: {len(actual_articles)}개")
             
-            # 최대 4개 처리
-            max_articles = 4
+            # 최대 3개 처리 (테스트용으로 줄임)
+            max_articles = 3
             processed = 0
             
             for article in actual_articles[:20]:
@@ -452,20 +283,35 @@ class NaverCafeCrawler:
                     if not title or not link or '공지' in title:
                         continue
                     
-                    # 중복 체크
+                    # 중복 체크 (임시 비활성화 - 테스트용)
                     article_id = link.split('articleid=')[-1].split('&')[0] if 'articleid=' in link else ""
                     
-                    try:
-                        notion = NotionDatabase()
-                        if notion.check_duplicate(link):
-                            logging.info(f"⏭️ 이미 저장됨: {title[:30]}...")
-                            continue
-                    except:
-                        pass
+                    # TODO: 테스트 완료 후 중복 체크 다시 활성화
+                    # try:
+                    #     notion = NotionDatabase()
+                    #     if notion.check_duplicate(link):
+                    #         logging.info(f"⏭️ 이미 저장됨: {title[:30]}...")
+                    #         continue
+                    # except:
+                    #     pass
+                    
+                    logging.info(f"🔄 중복 체크 비활성화 - 강제 처리: {title[:30]}...")
                     
                     # 내용 크롤링
-                    logging.info(f"📖 크롤링: {title[:30]}...")
+                    logging.info(f"📖 크롤링 시작: {title[:30]}...")
+                    logging.info(f"🔗 URL: {link}")
+                    
                     content = self.get_article_content(link)
+                    
+                    logging.info(f"📝 추출된 내용 길이: {len(content)}자")
+                    logging.info(f"📄 내용 미리보기: {content[:100]}...")
+
+                    # 내용 추출 실패 시 재시도 후 저장
+                    if "내용을 불러올 수 없습니다" in content:
+                        logging.warning(f"⚠️ 내용 추출 실패, 제목과 링크만 저장: {title[:30]}...")
+                        content = f"[내용 자동 추출 실패]\n\n제목: {title}\n\n원본 게시글을 확인하려면 URL을 클릭하세요."
+                    else:
+                        logging.info(f"✅ 내용 추출 성공: {title[:30]}...")
                     
                     # 작성자
                     author = "Unknown"
@@ -526,104 +372,90 @@ class NotionDatabase:
         self.database_id = os.getenv('NOTION_DATABASE_ID')
     
     def check_duplicate(self, url: str) -> bool:
-        """중복 체크"""
+        """중복 체크 - URL 필드 기반"""
         try:
-            article_id = ""
-            if 'articleid=' in url:
-                article_id = url.split('articleid=')[1].split('&')[0]
+            logging.debug(f"🔍 중복 체크: {url}")
             
-            if article_id:
-                response = self.client.databases.query(
-                    database_id=self.database_id,
-                    filter={
-                        "property": "URL",
-                        "url": {"contains": f"articleid={article_id}"}
-                    }
-                )
+            # URL로 중복 체크
+            query_filter = {
+                "property": "URL",
+                "url": {"equals": url}
+            }
+
+            response = self.client.databases.query(
+                database_id=self.database_id,
+                filter=query_filter
+            )
+            
+            num_results = len(response.get('results', []))
+            is_duplicate = num_results > 0
+            
+            if is_duplicate:
+                logging.debug(f"  🔴 중복 발견: {num_results}개")
             else:
-                response = self.client.databases.query(
-                    database_id=self.database_id,
-                    filter={
-                        "property": "URL",
-                        "url": {"equals": url}
-                    }
-                )
+                logging.debug(f"  🟢 새로운 게시물")
             
-            return len(response['results']) > 0
-            
-        except:
+            return is_duplicate
+
+        except Exception as e:
+            logging.error(f"❌ 중복 체크 오류: {e}")
+            # 오류 시에는 중복이 아니라고 판단 (안전장치)
             return False
     
     def save_article(self, article: Dict) -> bool:
-        """게시물 저장"""
+        """게시물 저장 - 노션 DB 구조에 맞춤"""
         try:
-            if self.check_duplicate(article['url']):
-                logging.info(f"⏭️ 중복: {article['title'][:30]}...")
-                return False
+            # TODO: 테스트 완료 후 중복 체크 다시 활성화
+            # if self.check_duplicate(article['url']):
+            #     logging.info(f"⏭️ 중복: {article['title'][:30]}...")
+            #     return False
             
-            # 노션 속성
+            logging.info(f"💾 중복 체크 비활성화 - 강제 저장 시도: {article['title'][:30]}...")
+            
+            # 노션 속성 (이미지에서 확인된 필드 구조에 맞춤)
             properties = {}
             
-            # 제목
-            title_field = os.getenv('NOTION_TITLE_FIELD', 'Name')
+            # 1. 이름 (제목) - Title 필드
             title = article.get('title', '').strip() or "제목 없음"
+            # 제목이 너무 길면 자르기 (노션 제목 필드 제한)
+            if len(title) > 100:
+                title = title[:97] + "..."
             
-            for field in [title_field, 'Name', '새 페이지', '제목']:
-                try:
-                    properties[field] = {
-                        "title": [{"text": {"content": title}}]
-                    }
-                    break
-                except:
-                    continue
+            properties["이름"] = {
+                "title": [{"text": {"content": title}}]
+            }
             
-            # URL
+            # 2. 작성자 - Rich Text 필드
+            author = article.get('author', 'Unknown').strip()
+            if author and author != 'Unknown':
+                properties["작성자"] = {
+                    "rich_text": [{"text": {"content": author}}]
+                }
+            
+            # 3. 작성일 - Rich Text 필드 (이미지에서 텍스트로 보임)
+            date_str = article.get('date', datetime.now().strftime('%Y-%m-%d'))
+            properties["작성일"] = {
+                "rich_text": [{"text": {"content": date_str}}]
+            }
+            
+            # 4. URL - URL 필드
             if article.get('url'):
                 properties["URL"] = {"url": article['url']}
             
-            # 작성자
-            if article.get('author'):
-                properties["작성자"] = {
-                    "rich_text": [{"text": {"content": article['author']}}]
-                }
-            
-            # 작성일
-            if article.get('date'):
-                properties["작성일"] = {
-                    "rich_text": [{"text": {"content": article['date']}}]
-                }
-            
-            # 카페명
-            if article.get('cafe_name'):
-                try:
-                    properties["카페명"] = {
-                        "select": {"name": article['cafe_name']}
-                    }
-                except:
-                    properties["카페명"] = {
-                        "rich_text": [{"text": {"content": article['cafe_name']}}]
-                    }
-            
-            # 내용
-            content = article.get('content', '').strip()[:2000]
+            # 5. 내용 - Rich Text 필드
+            content = article.get('content', '').strip()
             if not content:
-                content = "(내용 없음)"
+                content = "[내용 없음]"
+            
+            # 내용이 너무 길면 자르기 (노션 Rich Text 제한 고려)
+            if len(content) > 2000:
+                content = content[:1997] + "..."
             
             properties["내용"] = {
                 "rich_text": [{"text": {"content": content}}]
             }
             
-            # 크롤링 일시
-            try:
-                properties["크롤링 일시"] = {
-                    "date": {"start": datetime.now().isoformat()}
-                }
-            except:
-                properties["크롤링 일시"] = {
-                    "rich_text": [{"text": {"content": datetime.now().isoformat()}}]
-                }
-            
-            # uploaded
+            # 6. uploaded - Checkbox 필드 (기본값: false)
             properties["uploaded"] = {"checkbox": False}
             
             # 페이지 생성
@@ -632,11 +464,17 @@ class NotionDatabase:
                 properties=properties
             )
             
-            logging.info(f"✅ 노션 저장: {title[:30]}...")
+            logging.info(f"✅ 노션 저장 성공: {title[:30]}...")
             return True
             
         except Exception as e:
-            logging.error(f"❌ 저장 실패: {e}")
+            logging.error(f"❌ 노션 저장 실패: {e}")
+            logging.error(f"   게시물 정보: {article.get('title', 'Unknown')[:50]}")
+            
+            # 디버깅을 위한 상세 오류 정보
+            import traceback
+            logging.debug(f"   상세 오류: {traceback.format_exc()}")
+            
             return False
 
 
@@ -655,9 +493,18 @@ def main():
         logging.error(f"❌ 환경변수 누락: {', '.join(missing)}")
         sys.exit(1)
     
-    # 카페 설정
+    # 카페 설정 - 실제 F-E 카페 정보로 업데이트
     cafes = []
     
+    # F-E 카페 설정 (제공된 정보 기반)
+    cafes.append({
+        'name': 'F-E 카페',
+        'url': 'https://cafe.naver.com/f-e',
+        'club_id': '18786605',
+        'board_id': '105'
+    })
+    
+    # 환경변수로 추가 카페 설정 가능
     if os.getenv('CAFE1_URL'):
         cafes.append({
             'name': os.getenv('CAFE1_NAME', '카페1'),
