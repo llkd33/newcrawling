@@ -10,6 +10,7 @@ import time
 import logging
 from datetime import datetime
 import re
+import random
 from typing import List, Dict
 from dotenv import load_dotenv
 import hashlib
@@ -105,6 +106,187 @@ class NaverCafeCrawler:
         self.wait = None
         self.content_extractor = None
         self.setup_driver()
+
+    # -------------------- Navigation & WAF helpers --------------------
+    def soft_nav_to(self, url: str, wait_complete: bool = True) -> bool:
+        """Same-tab JS navigation to preserve referrer and reduce WAF triggers."""
+        try:
+            # Prefer location.assign for natural navigation
+            self.driver.execute_script("location.assign(arguments[0])", url)
+        except Exception:
+            try:
+                # Fallback: hidden anchor click
+                self.driver.execute_script(
+                    """
+                    const a = document.createElement('a');
+                    a.href = arguments[0];
+                    a.rel = 'noopener';
+                    a.style.display = 'none';
+                    document.body.appendChild(a);
+                    a.click();
+                    """,
+                    url,
+                )
+            except Exception as e:
+                logging.warning(f"⚠️ soft_nav_to 실패: {e}")
+                return False
+
+        if wait_complete:
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except Exception:
+                pass
+        return True
+
+    def looks_blocked(self) -> bool:
+        """Detects likely WAF/blocked/error pages by common signals."""
+        try:
+            html = (self.driver.page_source or "").lower()
+            title = (self.driver.title or "").lower()
+        except Exception:
+            return False
+        bad_signals = [
+            "자동", "보안", "차단", "이상 트래픽", "오류가 발생", "일시적으로",
+            "blocked", "access denied", "robot", "security"
+        ]
+        return any(sig in html or sig in title for sig in bad_signals)
+
+    def backoff_retry(self, attempts: int = 3, base_delay: float = 1.2) -> bool:
+        """Exponential-ish backoff with random jitter and refresh after blocks."""
+        for i in range(attempts):
+            delay = base_delay * (i + 1) + random.uniform(0.2, 0.9)
+            time.sleep(delay)
+            try:
+                self.driver.refresh()
+            except Exception:
+                pass
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: d.execute_script("return document.readyState") == "complete"
+                )
+            except Exception:
+                pass
+            if not self.looks_blocked():
+                return True
+        return False
+
+    def warmup_navigation(self, club_id: str, board_id: str) -> None:
+        """On-site path warmup: home -> SPA list to build session and referrer."""
+        try:
+            # Hit Naver main to ensure cookies are set
+            self.driver.get("https://www.naver.com")
+            self.wait_dom_ready(timeout=15)
+            time.sleep(0.6 + random.uniform(0.1, 0.4))
+
+            # Cafe home
+            home_url = f"https://cafe.naver.com/ca-fe/cafes/{club_id}"
+            self.driver.get(home_url)
+            self.wait_dom_ready(timeout=15)
+            time.sleep(0.6 + random.uniform(0.2, 0.6))
+
+            # SPA menu list
+            spa_list = f"https://cafe.naver.com/f-e/cafes/{club_id}/menus/{board_id}?viewType=L&web=1"
+            self.driver.get(spa_list)
+            self.wait_dom_ready(timeout=15)
+            time.sleep(0.6 + random.uniform(0.2, 0.6))
+        except Exception as e:
+            logging.warning(f"⚠️ 워밍업 내비 실패(무시): {e}")
+
+    def first_text(self, selectors: List[str]) -> str:
+        """Return first non-empty text for any selector in current context."""
+        for sel in selectors:
+            try:
+                elems = self.driver.find_elements(By.CSS_SELECTOR, sel)
+                if elems:
+                    txt = elems[0].text.strip()
+                    if txt:
+                        return txt
+            except Exception:
+                continue
+        return ""
+
+    def mobile_fallback_crawl(self, club_id: str, board_id: str, cafe_name: str, max_articles: int = 10) -> List[Dict]:
+        """Fallback crawling via m.cafe.naver.com (iframeless + usually weaker WAF)."""
+        results: List[Dict] = []
+        try:
+            m_list = f"https://m.cafe.naver.com/ArticleList.nhn?clubid={club_id}&menuid={board_id}&userDisplay=50"
+            try:
+                self.driver.get(m_list)
+                self.wait_dom_ready(timeout=15)
+            except Exception:
+                pass
+
+            ids = set()
+            try:
+                anchors = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='ArticleRead.nhn?']")
+                for a in anchors:
+                    href = a.get_attribute("href") or ""
+                    m = re.search(r"articleid=(\d+)", href)
+                    if m:
+                        ids.add(m.group(1))
+            except Exception:
+                pass
+
+            if not ids:
+                # fallback to page source parsing
+                html = self.driver.page_source
+                ids.update(re.findall(r"articleid=(\d+)", html))
+
+            ids_list = list(ids)[:max_articles]
+            logging.info(f"📱 모바일 폴백: {len(ids_list)}개 ID 수집")
+
+            for i, aid in enumerate(ids_list, 1):
+                try:
+                    m_read = f"https://m.cafe.naver.com/ArticleRead.nhn?clubid={club_id}&articleid={aid}"
+                    # Try referrer-preserving navigation first
+                    self.soft_nav_to(m_read)
+                    time.sleep(0.3 + random.uniform(0.2, 0.6))
+                    if self.looks_blocked():
+                        if not self.backoff_retry():
+                            logging.warning("⚠️ 모바일 read에서도 차단, 다음 글로")
+                            continue
+
+                    title = self.first_text([".tit", "#post_title", "h3", "header h3", ".title"])
+                    author = self.first_text([".nickname", ".writer", ".post_writer", ".nick"])
+                    content = self.first_text([
+                        "#post_content", ".post_content", ".ContentRenderer", ".se-main-container", ".article_viewer",
+                    ])
+                    if not content:
+                        try:
+                            content = self.driver.execute_script(
+                                "return document.body.innerText||document.body.textContent||'';") or ""
+                        except Exception:
+                            content = ""
+
+                    read_url = m_read
+                    if not title:
+                        title = f"제목 없음 ({aid})"
+                    if not author:
+                        author = "Unknown"
+                    if not content or len(content) < 10:
+                        content = f"내용을 불러올 수 없습니다.\n원본 링크: {read_url}"
+
+                    data = {
+                        'title': title,
+                        'author': author,
+                        'date': datetime.now().strftime('%Y-%m-%d'),
+                        'url': read_url,
+                        'article_id': aid,
+                        'content': content[:1500],
+                        'cafe_name': cafe_name,
+                        'crawled_at': datetime.now().isoformat(),
+                    }
+                    results.append(data)
+                    logging.info(f"✅ 모바일 폴백 [{i}/{len(ids_list)}] 처리 완료: {title[:30]}…")
+                    time.sleep(0.3 + random.uniform(0.2, 0.6))
+                except Exception as e:
+                    logging.warning(f"⚠️ 모바일 폴백 개별 글 실패({aid}): {e}")
+                    continue
+        except Exception as e:
+            logging.error(f"❌ 모바일 폴백 실패: {e}")
+        return results
     
     def collect_article_ids_from_classic_list(self):
         """
@@ -1106,43 +1288,30 @@ class NaverCafeCrawler:
         return False
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
-        """카페 게시물 크롤링 - 클래식 엔드포인트 우회 버전 💥"""
+        """카페 게시물 크롤링 - JS 소프트 내비 + 모바일 폴백 + 백오프 💥"""
         results = []
-        
+
         try:
             club_id = cafe_config['club_id']
             board_id = cafe_config['board_id']
-            
-            # 1단계: SPA vs 클래식 전략 결정
-            force_classic = os.getenv("FORCE_CLASSIC", "0") == "1"
-            
-            if not force_classic:
-                # 기존 SPA 메뉴 URL로 먼저 시도
-                spa_url = f"{cafe_config['url']}/cafes/{club_id}/menus/{board_id}?viewType=L&web=1"
-                logging.info(f"📍 SPA URL 시도: {spa_url}")
-                
-                if robust_get(self.driver, spa_url):
-                    if is_spa_list_page(self.driver):
-                        logging.warning("⚠️ SPA 레이아웃 감지, 클래식으로 폴백")
-                        force_classic = True
-                    else:
-                        # SPA가 아니면 iframe 전환 시도
-                        if not self.switch_to_cafe_iframe(max_tries=2, timeout_each=15, debug_screenshot=False):
-                            logging.warning("⚠️ SPA에서 iframe 전환 실패, 클래식으로 폴백")
-                            force_classic = True
-                else:
-                    logging.warning("⚠️ SPA URL 접근 실패, 클래식으로 폴백")
-                    force_classic = True
-            
-            # 2단계: 클래식 리스트로 강제/폴백
-            if force_classic:
-                classic_list_url = build_classic_list_url(club_id, board_id, user_display=50)
-                logging.info(f"🔧 클래식 URL로 전환: {classic_list_url}")
-                
-                if not robust_get(self.driver, classic_list_url):
-                    logging.error("❌ 클래식 리스트 URL 접근 실패")
-                    return results
-            
+            # 워밍업 경로: 홈 -> SPA 메뉴
+            logging.info("🚶 온사이트 워밍업 경로 시작")
+            self.warmup_navigation(club_id, board_id)
+
+            # 클래식 리스트로 JS 소프트 내비 (Referrer 보존)
+            classic_list_url = build_classic_list_url(club_id, board_id, user_display=50)
+            logging.info(f"🔧 클래식 리스트로 소프트 내비: {classic_list_url}")
+            self.soft_nav_to(classic_list_url)
+            self.wait_dom_ready(timeout=20)
+            time.sleep(0.6 + random.uniform(0.2, 0.6))
+
+            # 차단 신호 감지 -> 백오프 -> 모바일 폴백
+            if self.looks_blocked():
+                logging.warning("🛡️ 차단 신호 감지, 백오프 재시도")
+                if not self.backoff_retry():
+                    logging.warning("📱 모바일 도메인으로 폴백 전환")
+                    return self.mobile_fallback_crawl(club_id, board_id, cafe_config['name'])
+
             # 3단계: 리스트에서 articleid를 문자열로 전부 수집
             logging.info("📊 게시물 ID 수집 시작...")
             article_ids = self.collect_article_ids_from_classic_list()
@@ -1153,12 +1322,16 @@ class NaverCafeCrawler:
                 
                 for page in range(1, 4):  # 1~3페이지 탐색
                     page_url = build_classic_list_url(club_id, board_id, user_display=50, page=page)
-                    logging.info(f"🔍 {page}페이지 탐색: {page_url}")
-                    
-                    if robust_get(self.driver, page_url):
+                    logging.info(f"🔍 {page}페이지 소프트 내비: {page_url}")
+                    self.soft_nav_to(page_url)
+                    self.wait_dom_ready(timeout=15)
+                    time.sleep(0.4 + random.uniform(0.1, 0.5))
+                    if not self.looks_blocked():
                         page_ids = self.collect_article_ids_from_classic_list()
                         article_ids.extend(page_ids)
                         logging.info(f"✅ {page}페이지에서 {len(page_ids)}개 ID 수집")
+                    else:
+                        logging.warning("⚠️ 페이지 이동 중 차단 신호, 모바일 폴백 고려")
                     
                     if len(article_ids) >= 20:  # 충분히 수집되면 중단
                         break
@@ -1186,11 +1359,18 @@ class NaverCafeCrawler:
                     
                     # 클래식 Read URL로 이동
                     read_url = build_classic_read_url(club_id, article_id)
-                    
-                    if not robust_get(self.driver, read_url):
-                        logging.warning(f"⚠️ [{i+1}] 게시물 페이지 접근 실패: {read_url}")
-                        continue
-                    
+                    # JS 내비로 이동하여 Referrer 보존
+                    self.soft_nav_to(read_url)
+                    self.wait_dom_ready(timeout=20)
+                    time.sleep(0.3 + random.uniform(0.2, 0.6))
+                    if self.looks_blocked():
+                        if not self.backoff_retry():
+                            # 개별 글 수준 차단 시 모바일 read로 폴백 시도
+                            m_read = f"https://m.cafe.naver.com/ArticleRead.nhn?clubid={club_id}&articleid={article_id}"
+                            self.soft_nav_to(m_read)
+                            self.wait_dom_ready(timeout=15)
+                            time.sleep(0.3 + random.uniform(0.2, 0.6))
+
                     # iframe 전환 시도 (실패해도 계속 진행)
                     iframe_success = self.switch_to_cafe_iframe(max_tries=2, timeout_each=20, debug_screenshot=False)
                     if not iframe_success:
