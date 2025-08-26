@@ -138,88 +138,237 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """
-        게시물 내용 가져오기 - 단순하고 확실한 방법
+        게시물 내용 가져오기 - 혁신적인 JavaScript 실행 방식
         """
         try:
-            logging.info(f"📖 게시물 내용 추출 시작: {url}")
-            
-            # URL 유효성 검사
-            if not url or 'naver.com' not in url:
-                return "게시물 링크가 올바르지 않습니다."
+            logging.info(f"🚀 JavaScript 기반 내용 추출 시작: {url}")
             
             # 게시물 페이지로 이동
             self.driver.get(url)
-            time.sleep(5)
+            time.sleep(8)  # 충분한 로딩 시간
             
-            # 로그인 페이지 체크
+            # 로그인 체크
             if 'nid.naver.com' in self.driver.current_url:
-                logging.warning("⚠️ 로그인 필요, 재로그인 시도")
                 if self.login_naver():
                     self.driver.get(url)
-                    time.sleep(5)
+                    time.sleep(8)
                 else:
-                    return "로그인이 필요한 게시물입니다."
+                    return "로그인 필요"
             
             # iframe 전환
-            iframe_switched = False
             try:
                 self.wait.until(EC.frame_to_be_available_and_switch_to_it('cafe_main'))
-                iframe_switched = True
-                logging.info("✅ iframe 전환 성공")
                 time.sleep(5)
+                logging.info("✅ iframe 전환 성공")
             except:
                 logging.warning("⚠️ iframe 전환 실패")
             
-            # F-E 카페 전용 내용 추출
-            content = self._extract_fe_cafe_content()
-            
-            if not content or len(content) < 10:
-                # 폴백: 기본 텍스트 추출
-                try:
-                    body = self.driver.find_element(By.TAG_NAME, 'body')
-                    all_text = body.text
-                    
-                    # 텍스트를 줄 단위로 분리하고 필터링
-                    lines = all_text.split('\n')
-                    content_lines = []
-                    
-                    for line in lines:
-                        line = line.strip()
-                        if len(line) > 5 and not self._is_system_text(line):
-                            content_lines.append(line)
-                    
-                    if content_lines:
-                        content = '\n'.join(content_lines[:20])  # 처음 20줄만
-                        
-                except Exception as e:
-                    logging.error(f"폴백 텍스트 추출 실패: {e}")
-                    content = "내용을 추출할 수 없습니다."
+            # JavaScript로 직접 내용 추출
+            content = self._extract_with_javascript()
             
             # iframe에서 나오기
-            if iframe_switched:
-                try:
-                    self.driver.switch_to.default_content()
-                except:
-                    pass
-            
-            # 결과 검증
-            if content and len(content.strip()) > 20:
-                # 로그인 관련 텍스트 체크
-                if self._contains_login_text(content):
-                    return "게시물에 접근할 수 없습니다. (로그인 필요)"
-                
-                logging.info(f"✅ 내용 추출 성공: {len(content)}자")
-                return content[:1000]  # 최대 1000자로 제한
-            else:
-                return "게시물 내용을 찾을 수 없습니다."
-                
-        except Exception as e:
-            logging.error(f"❌ 내용 추출 중 오류: {e}")
             try:
                 self.driver.switch_to.default_content()
             except:
                 pass
-            return f"내용 추출 중 오류가 발생했습니다: {str(e)[:50]}"
+            
+            if content and len(content.strip()) > 10:
+                logging.info(f"✅ JavaScript 추출 성공: {len(content)}자")
+                return content[:1500]
+            else:
+                return "JavaScript 추출 실패"
+                
+        except Exception as e:
+            logging.error(f"❌ JavaScript 추출 오류: {e}")
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+            return f"추출 오류: {str(e)[:50]}"
+    
+    def _extract_with_javascript(self) -> str:
+        """JavaScript를 사용한 직접 DOM 조작"""
+        try:
+            # 1. SmartEditor 텍스트 추출 JavaScript
+            js_script = """
+            var content = [];
+            
+            // 방법 1: se-text-paragraph 내의 모든 텍스트
+            var paragraphs = document.querySelectorAll('p.se-text-paragraph');
+            paragraphs.forEach(function(p) {
+                var spans = p.querySelectorAll('span');
+                spans.forEach(function(span) {
+                    var text = span.innerText || span.textContent;
+                    if (text && text.trim().length > 2) {
+                        content.push(text.trim());
+                    }
+                });
+                
+                // span이 없으면 p 직접 텍스트
+                if (spans.length === 0) {
+                    var text = p.innerText || p.textContent;
+                    if (text && text.trim().length > 2) {
+                        content.push(text.trim());
+                    }
+                }
+            });
+            
+            // 방법 2: se-component 내의 모든 텍스트
+            if (content.length === 0) {
+                var components = document.querySelectorAll('.se-component');
+                components.forEach(function(comp) {
+                    var text = comp.innerText || comp.textContent;
+                    if (text && text.trim().length > 5) {
+                        content.push(text.trim());
+                    }
+                });
+            }
+            
+            // 방법 3: se-main-container 전체
+            if (content.length === 0) {
+                var mainContainer = document.querySelector('.se-main-container');
+                if (mainContainer) {
+                    var text = mainContainer.innerText || mainContainer.textContent;
+                    if (text && text.trim().length > 10) {
+                        content.push(text.trim());
+                    }
+                }
+            }
+            
+            // 방법 4: 모든 텍스트 노드 수집 (최후의 수단)
+            if (content.length === 0) {
+                var walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    {
+                        acceptNode: function(node) {
+                            var text = node.textContent.trim();
+                            if (text.length > 5 && 
+                                !text.includes('javascript') && 
+                                !text.includes('login') &&
+                                !text.includes('NAVER')) {
+                                return NodeFilter.FILTER_ACCEPT;
+                            }
+                            return NodeFilter.FILTER_REJECT;
+                        }
+                    }
+                );
+                
+                var textNodes = [];
+                var node;
+                while (node = walker.nextNode()) {
+                    textNodes.push(node.textContent.trim());
+                }
+                
+                if (textNodes.length > 0) {
+                    content = textNodes.slice(0, 20); // 처음 20개만
+                }
+            }
+            
+            return content.join('\\n');
+            """
+            
+            result = self.driver.execute_script(js_script)
+            
+            if result and len(result.strip()) > 10:
+                logging.info(f"✅ JavaScript 스크립트 성공: {len(result)}자")
+                return result
+            
+            # 폴백: 더 간단한 JavaScript
+            simple_js = """
+            var allText = document.body.innerText || document.body.textContent;
+            var lines = allText.split('\\n');
+            var goodLines = [];
+            
+            for (var i = 0; i < lines.length && goodLines.length < 15; i++) {
+                var line = lines[i].trim();
+                if (line.length > 5 && 
+                    !line.includes('javascript') && 
+                    !line.includes('login') &&
+                    !line.includes('NAVER Corp')) {
+                    goodLines.push(line);
+                }
+            }
+            
+            return goodLines.join('\\n');
+            """
+            
+            fallback_result = self.driver.execute_script(simple_js)
+            if fallback_result:
+                logging.info(f"✅ JavaScript 폴백 성공: {len(fallback_result)}자")
+                return fallback_result
+            
+            return ""
+            
+        except Exception as e:
+            logging.error(f"❌ JavaScript 실행 실패: {e}")
+            return ""
+    
+    def _extract_author_with_javascript(self, url: str) -> str:
+        """JavaScript로 작성자 추출"""
+        try:
+            # 현재 URL이 게시물 페이지인지 확인
+            current_url = self.driver.current_url
+            if url not in current_url:
+                return "Unknown"
+            
+            # JavaScript로 작성자 추출
+            author_js = """
+            var author = '';
+            
+            // 방법 1: button.nickname
+            var nicknameBtn = document.querySelector('button.nickname');
+            if (nicknameBtn) {
+                author = nicknameBtn.innerText || nicknameBtn.textContent;
+            }
+            
+            // 방법 2: button[id*="writerInfo"]
+            if (!author) {
+                var writerBtn = document.querySelector('button[id*="writerInfo"]');
+                if (writerBtn) {
+                    author = writerBtn.innerText || writerBtn.textContent;
+                }
+            }
+            
+            // 방법 3: .nickname 클래스
+            if (!author) {
+                var nicknameElem = document.querySelector('.nickname');
+                if (nicknameElem) {
+                    author = nicknameElem.innerText || nicknameElem.textContent;
+                }
+            }
+            
+            // 방법 4: 모든 button 태그에서 찾기
+            if (!author) {
+                var buttons = document.querySelectorAll('button');
+                for (var i = 0; i < buttons.length; i++) {
+                    var btn = buttons[i];
+                    var text = btn.innerText || btn.textContent;
+                    if (text && text.trim().length > 0 && text.trim().length < 20) {
+                        // 작성자 같은 텍스트인지 확인
+                        if (!text.includes('로그인') && !text.includes('메뉴') && 
+                            !text.includes('검색') && !text.includes('등록')) {
+                            author = text.trim();
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            return author ? author.trim() : '';
+            """
+            
+            result = self.driver.execute_script(author_js)
+            
+            if result and len(result.strip()) > 0:
+                logging.info(f"✅ JavaScript 작성자 추출 성공: {result}")
+                return result.strip()
+            
+            return "Unknown"
+            
+        except Exception as e:
+            logging.error(f"❌ JavaScript 작성자 추출 실패: {e}")
+            return "Unknown"
     
     def _is_system_text(self, text: str) -> bool:
         """시스템 텍스트인지 판단"""
@@ -242,110 +391,7 @@ class NaverCafeCrawler:
         
         return any(keyword in text for keyword in login_keywords)
     
-    def _extract_fe_cafe_content(self) -> str:
-        """F-E 카페 전용 내용 추출"""
-        try:
-            content_parts = []
-            
-            # 1. SmartEditor 텍스트 단락 추출
-            text_paragraphs = self.driver.find_elements(By.CSS_SELECTOR, 'p.se-text-paragraph')
-            for paragraph in text_paragraphs:
-                try:
-                    # span 태그 내의 텍스트 추출
-                    spans = paragraph.find_elements(By.CSS_SELECTOR, 'span')
-                    for span in spans:
-                        text = span.text.strip()
-                        if text and len(text) > 3:
-                            content_parts.append(text)
-                except:
-                    # span이 없으면 p 태그 직접 텍스트
-                    text = paragraph.text.strip()
-                    if text and len(text) > 3:
-                        content_parts.append(text)
-            
-            # 2. 이미지 정보 추출 (선택적)
-            images = self.driver.find_elements(By.CSS_SELECTOR, 'img.se-image-resource')
-            for img in images[:3]:  # 최대 3개 이미지만
-                try:
-                    src = img.get_attribute('src')
-                    if src:
-                        content_parts.append(f"[이미지: {src}]")
-                except:
-                    pass
-            
-            # 3. 일반 텍스트 요소들
-            if not content_parts:
-                general_selectors = [
-                    '.se-main-container .se-component',
-                    '.se-main-container p',
-                    '.se-main-container div',
-                    '.article_viewer .se-text',
-                    '.post-content p'
-                ]
-                
-                for selector in general_selectors:
-                    try:
-                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
-                        for element in elements:
-                            text = element.text.strip()
-                            if text and len(text) > 5 and not self._is_system_text(text):
-                                content_parts.append(text)
-                        
-                        if content_parts:
-                            break
-                    except:
-                        continue
-            
-            # 결과 조합
-            if content_parts:
-                # 중복 제거
-                unique_parts = []
-                for part in content_parts:
-                    if part not in unique_parts:
-                        unique_parts.append(part)
-                
-                content = '\n'.join(unique_parts[:15])  # 최대 15개 부분
-                logging.info(f"✅ F-E 카페 내용 추출 성공: {len(content)}자")
-                return content
-            
-            return ""
-            
-        except Exception as e:
-            logging.error(f"❌ F-E 카페 내용 추출 실패: {e}")
-            return ""
-    
-    def _extract_fe_cafe_author(self, url: str) -> str:
-        """F-E 카페 작성자 추출 (게시물 페이지에서)"""
-        try:
-            # 현재 페이지가 게시물 페이지인지 확인
-            current_url = self.driver.current_url
-            if url not in current_url:
-                return "Unknown"
-            
-            # F-E 카페 작성자 버튼 선택자
-            author_selectors = [
-                'button.nickname',  # 제공된 구조
-                'button[id*="writerInfo"]',  # ID 패턴 매칭
-                '.nickname',
-                '.author',
-                '.writer'
-            ]
-            
-            for selector in author_selectors:
-                try:
-                    author_elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    author = author_elem.text.strip()
-                    if author and len(author) > 0:
-                        logging.info(f"✅ 작성자 추출 성공: {author} (선택자: {selector})")
-                        return author
-                except:
-                    continue
-            
-            return "Unknown"
-            
-        except Exception as e:
-            logging.error(f"❌ F-E 카페 작성자 추출 실패: {e}")
-            return "Unknown"
+
     
     def _extract_real_content(self) -> str:
         """실제 게시물 내용만 추출"""
@@ -737,8 +783,8 @@ class NaverCafeCrawler:
                         logging.error(f"❌ [{i+1}] 내용 추출 오류: {content_error}")
                         content = f"내용 추출 중 오류 발생: {str(content_error)[:100]}"
                     
-                    # 작성자 추출 - F-E 카페 전용
-                    author = self._extract_fe_cafe_author(link)
+                    # 작성자 추출 - JavaScript 방식
+                    author = self._extract_author_with_javascript(link)
                     if not author or author == "Unknown":
                         # 폴백: 게시물 목록에서 추출
                         try:
