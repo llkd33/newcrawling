@@ -412,49 +412,35 @@ class NotionDatabase:
             
             logging.info(f"💾 중복 체크 비활성화 - 강제 저장 시도: {article['title'][:30]}...")
             
-            # 노션 속성 (이미지 구조에 정확히 맞춤)
+            # 노션 속성 (정확한 데이터베이스 구조에 맞춤)
             properties = {}
             
-            # 1. 이름 (제목) - Title 필드
+            # 1. 제목 - Title 필드
             title = article.get('title', '').strip() or "제목 없음"
             if len(title) > 100:
                 title = title[:97] + "..."
             
-            properties["이름"] = {
+            properties["제목"] = {
                 "title": [{"text": {"content": title}}]
             }
             
-            # 2. 작성자 - Rich Text 필드
+            # 2. 작성자 - Text 필드
             author = article.get('author', 'Unknown').strip()
-            if author and author != 'Unknown':
-                properties["작성자"] = {
-                    "rich_text": [{"text": {"content": author}}]
-                }
+            properties["작성자"] = {
+                "rich_text": [{"text": {"content": author}}]
+            }
             
-            # 3. 작성일 - Date 필드 (이미지에서 Date 타입으로 확인됨)
+            # 3. 작성일 - Text 필드
             date_str = article.get('date', datetime.now().strftime('%Y-%m-%d'))
-            try:
-                # 날짜 형식 변환 (YYYY-MM-DD)
-                if '.' in date_str:
-                    date_str = date_str.replace('.', '-')
-                if len(date_str.split('-')[0]) == 2:  # YY-MM-DD 형식인 경우
-                    year = '20' + date_str.split('-')[0]
-                    date_str = year + '-' + '-'.join(date_str.split('-')[1:])
-                
-                properties["작성일"] = {
-                    "date": {"start": date_str}
-                }
-            except:
-                # 날짜 파싱 실패 시 오늘 날짜 사용
-                properties["작성일"] = {
-                    "date": {"start": datetime.now().strftime('%Y-%m-%d')}
-                }
+            properties["작성일"] = {
+                "rich_text": [{"text": {"content": date_str}}]
+            }
             
             # 4. URL - URL 필드
             if article.get('url'):
                 properties["URL"] = {"url": article['url']}
             
-            # 5. 내용 - Rich Text 필드
+            # 5. 내용 - Text 필드
             content = article.get('content', '').strip()
             if not content:
                 content = "[내용 없음]"
@@ -467,15 +453,15 @@ class NotionDatabase:
                 "rich_text": [{"text": {"content": content}}]
             }
             
-            # 6. 크롤링일시 - Date 필드 (현재 시간)
-            properties["크롤링일시"] = {
+            # 6. 크롤링 일시 - 날짜 필드 (현재 시간)
+            properties["크롤링 일시"] = {
                 "date": {"start": datetime.now().isoformat()}
             }
             
-            # 7. 카페 - Rich Text 필드
+            # 7. 카페명 - Select 필드
             cafe_name = article.get('cafe_name', 'Unknown')
-            properties["카페"] = {
-                "rich_text": [{"text": {"content": cafe_name}}]
+            properties["카페명"] = {
+                "select": {"name": cafe_name}
             }
             
             # 8. uploaded - Checkbox 필드 (기본값: false)
