@@ -48,27 +48,64 @@ class NaverCafeCrawler:
         self.setup_driver()
         
     def setup_driver(self):
-        """Selenium 드라이버 설정"""
+        """Selenium 드라이버 설정 - 봇 탐지 방지 및 안정성 강화"""
         options = Options()
         
         # GitHub Actions 환경
         if os.getenv('GITHUB_ACTIONS'):
-            # Use new headless for better JS rendering in CI
             options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
         
-        # 기본 옵션
-        options.add_argument('--window-size=1920,1080')
+        # 봇 탐지 방지 및 안정성 강화 옵션
+        options.add_argument('--window-size=1440,900')  # 일반적인 데스크톱 해상도
         options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_argument('--lang=ko-KR')  # 한국어 환경 강제
+        options.add_argument('--disable-web-security')
+        options.add_argument('--disable-features=VizDisplayCompositor')
+        options.add_argument('--disable-extensions')
+        options.add_argument('--disable-plugins')
+        options.add_argument('--disable-images')  # 이미지 로딩 비활성화로 속도 향상
+        
+        # 일반 사용자 User-Agent (봇 탐지 방지)
+        options.add_argument(
+            'user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        )
+        
+        # 자동화 탐지 방지
         options.add_experimental_option("excludeSwitches", ["enable-automation"])
         options.add_experimental_option('useAutomationExtension', False)
-        options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+        
+        # 추가 성능 및 안정성 옵션
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-renderer-backgrounding')
+        options.add_argument('--disable-background-networking')
+        options.add_argument('--disable-ipc-flooding-protection')
         
         try:
             self.driver = webdriver.Chrome(options=options)
-            self.wait = WebDriverWait(self.driver, 15)
+            self.wait = WebDriverWait(self.driver, 25)  # 타임아웃 증가
+            
+            # 자동화 탐지 방지 스크립트 실행
+            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': '''
+                    Object.defineProperty(navigator, 'webdriver', {
+                        get: () => undefined
+                    });
+                    Object.defineProperty(navigator, 'plugins', {
+                        get: () => [1, 2, 3, 4, 5]
+                    });
+                    Object.defineProperty(navigator, 'languages', {
+                        get: () => ['ko-KR', 'ko', 'en-US', 'en']
+                    });
+                    window.chrome = {
+                        runtime: {}
+                    };
+                '''
+            })
             
             # 새로운 콘텐츠 추출기 초기화
             extraction_config = ExtractionConfig(
@@ -81,25 +118,22 @@ class NaverCafeCrawler:
             
             self.content_extractor = ContentExtractor(self.driver, self.wait, extraction_config)
             
-            logging.info("✅ 크롬 드라이버 및 콘텐츠 추출기 초기화 성공")
+            logging.info("✅ 크롬 드라이버 및 콘텐츠 추출기 초기화 성공 (봇 탐지 방지 적용)")
         except Exception as e:
             logging.error(f"❌ 드라이버 초기화 실패: {e}")
             raise
     
     def login_naver(self):
-        """네이버 로그인"""
+        """네이버 로그인 - 자동화 탐지 방지 강화"""
         try:
-            # 자동화 탐지 우회
-            self.driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
-                'source': '''
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                '''
-            })
+            logging.info("🔐 네이버 로그인 시작")
             
+            # 로그인 페이지로 이동
             self.driver.get('https://nid.naver.com/nidlogin.login')
-            time.sleep(3)
+            time.sleep(5)  # 로딩 시간 증가
+            
+            # 페이지 로딩 완료 대기
+            self.wait_dom_ready(timeout=15)
             
             # ID/PW 입력
             id_input = self.driver.find_element(By.ID, 'id')
@@ -806,16 +840,165 @@ class NaverCafeCrawler:
             logging.error(f"❌ 최후 수단도 실패: {e}")
             return f"[시스템 오류]\n\n게시물 링크: {url}\n\n오류: {str(e)[:100]}"
     
-    def switch_to_cafe_iframe(self):
-        """카페 iframe으로 안전하게 전환"""
+    def wait_dom_ready(self, timeout=30):
+        """DOM 완전 로딩 대기"""
         try:
-            self.driver.switch_to.default_content()
-            self.wait.until(EC.frame_to_be_available_and_switch_to_it((By.NAME, 'cafe_main')))
-            time.sleep(2)
+            self.wait.until(
+                lambda d: d.execute_script("return document.readyState") == "complete"
+            )
             return True
-        except Exception as e:
-            logging.warning(f"iframe 전환 실패: {e}")
+        except:
             return False
+    
+    def switch_to_cafe_iframe(self, max_tries=3, timeout_each=25, debug_screenshot=False):
+        """
+        카페 iframe으로 초탄탄하게 전환 - 다중 셀렉터 + 재시도 + 디버깅
+        """
+        # 다양한 iframe 셀렉터 (네이버 카페 변형 대응)
+        iframe_selectors = [
+            "#cafe_main",
+            "iframe#cafe_main", 
+            "iframe[id*='cafe_main']",
+            "iframe[src*='ArticleList']",
+            "iframe[src*='ArticleRead']", 
+            "iframe[src*='/cafes/'][src*='/articles']",
+            "iframe[name='cafe_main']",
+            "iframe[id='cafe_main']"
+        ]
+        
+        for attempt in range(1, max_tries + 1):
+            try:
+                logging.info(f"🔄 iframe 전환 시도 {attempt}/{max_tries}")
+                
+                # 기본 컨텍스트로 복귀
+                self.driver.switch_to.default_content()
+                
+                # DOM 완전 로딩 대기
+                if not self.wait_dom_ready(timeout=timeout_each // 2):
+                    logging.warning(f"⚠️ DOM 로딩 대기 타임아웃 (시도 {attempt})")
+                
+                # 스크롤로 지연 로드 트리거
+                try:
+                    self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight/3);")
+                    time.sleep(0.5)
+                except:
+                    pass
+                
+                # 현재 페이지 상태 로깅
+                try:
+                    current_info = self.driver.execute_script("""
+                        return {
+                            url: location.href,
+                            title: document.title,
+                            readyState: document.readyState,
+                            width: window.innerWidth,
+                            height: window.innerHeight,
+                            userAgent: navigator.userAgent.substring(0, 100)
+                        };
+                    """)
+                    logging.info(f"📊 페이지 상태: {current_info['url'][:80]}...")
+                    logging.info(f"📊 제목: {current_info['title'][:50]}...")
+                    logging.info(f"📊 해상도: {current_info['width']}x{current_info['height']}")
+                except:
+                    pass
+                
+                # 다중 셀렉터로 iframe 찾기 시도
+                for selector in iframe_selectors:
+                    try:
+                        logging.debug(f"🔍 iframe 셀렉터 시도: {selector}")
+                        
+                        # iframe 존재 확인
+                        iframe_elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if not iframe_elements:
+                            continue
+                        
+                        logging.info(f"✅ iframe 발견: {selector}")
+                        
+                        # iframe 전환 시도
+                        WebDriverWait(self.driver, timeout_each).until(
+                            EC.frame_to_be_available_and_switch_to_it((By.CSS_SELECTOR, selector))
+                        )
+                        
+                        # 전환 성공 확인
+                        time.sleep(2)
+                        try:
+                            # iframe 내부에서 간단한 JavaScript 실행으로 확인
+                            self.driver.execute_script("return document.readyState;")
+                            logging.info(f"✅ iframe 전환 성공: {selector}")
+                            return True
+                        except:
+                            # iframe 전환은 됐지만 내부 로딩이 안 된 경우
+                            logging.warning(f"⚠️ iframe 전환됐지만 내부 로딩 미완료: {selector}")
+                            self.driver.switch_to.default_content()
+                            continue
+                            
+                    except Exception as e:
+                        logging.debug(f"❌ {selector} 실패: {e}")
+                        try:
+                            self.driver.switch_to.default_content()
+                        except:
+                            pass
+                        continue
+                
+                # 모든 셀렉터 실패 시 페이지 새로고침 후 재시도
+                if attempt < max_tries:
+                    logging.warning(f"⚠️ 모든 iframe 셀렉터 실패, 페이지 새로고침 후 재시도 (시도 {attempt})")
+                    
+                    # 현재 URL에 데스크톱 강제 힌트 추가
+                    current_url = self.driver.current_url
+                    if '&web=1' not in current_url:
+                        if '?' in current_url:
+                            current_url += '&web=1'
+                        else:
+                            current_url += '?web=1'
+                    
+                    self.driver.get(current_url)
+                    time.sleep(2)
+                    continue
+                    
+            except Exception as e:
+                logging.error(f"❌ iframe 전환 시도 {attempt} 중 오류: {e}")
+                try:
+                    self.driver.switch_to.default_content()
+                except:
+                    pass
+        
+        # 모든 시도 실패 시 디버깅 정보 수집
+        if debug_screenshot or os.getenv('DEBUG_SCREENSHOT_ENABLED', 'true').lower() == 'true':
+            try:
+                timestamp = int(time.time())
+                screenshot_path = f"iframe_fail_{timestamp}.png"
+                self.driver.save_screenshot(screenshot_path)
+                logging.error(f"📷 iframe 실패 스크린샷 저장: {screenshot_path}")
+                
+                # HTML 일부 로깅
+                html_snippet = self.driver.page_source[:2000]
+                logging.error(f"🔍 HTML 스니펫: {html_snippet[:500]}...")
+                
+                # 현재 페이지 정보 상세 로깅
+                try:
+                    debug_info = self.driver.execute_script("""
+                        return {
+                            url: location.href,
+                            title: document.title,
+                            readyState: document.readyState,
+                            iframes: Array.from(document.querySelectorAll('iframe')).map(f => ({
+                                id: f.id,
+                                name: f.name,
+                                src: f.src ? f.src.substring(0, 100) : '',
+                                className: f.className
+                            }))
+                        };
+                    """)
+                    logging.error(f"🔍 디버그 정보: {debug_info}")
+                except:
+                    pass
+                    
+            except Exception as debug_error:
+                logging.error(f"❌ 디버깅 정보 수집 실패: {debug_error}")
+        
+        logging.error(f"❌ iframe 전환 완전 실패 (총 {max_tries}회 시도)")
+        return False
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
         """카페 게시물 크롤링 - StaleElement 문제 해결된 버전"""
@@ -832,23 +1015,58 @@ class NaverCafeCrawler:
             self.driver.get(board_url)
             time.sleep(5)
             
-            # 2단계: iframe 전환
-            if not self.switch_to_cafe_iframe():
-                logging.error("❌ iframe 전환 실패, 크롤링 중단")
+            # 2단계: 데스크톱 강제 힌트 추가
+            if '&web=1' not in board_url:
+                board_url += '&web=1'
+            
+            # 페이지 재로딩 (데스크톱 강제)
+            self.driver.get(board_url)
+            time.sleep(3)
+            
+            # 3단계: 초탄탄한 iframe 전환
+            if not self.switch_to_cafe_iframe(max_tries=3, timeout_each=25, debug_screenshot=True):
+                logging.error("❌ iframe 전환 완전 실패, 크롤링 중단")
                 return results
             
             logging.info("✅ iframe 전환 성공")
             
-            # 3단계: 게시물 URL을 문자열로 모두 수집 (StaleElement 방지)
+            # 4단계: 게시물 URL을 문자열로 모두 수집 (StaleElement 방지)
             article_data_list = self._collect_article_urls_safely(cafe_config)
             
+            # 수집 실패 시 스크롤/더보기 시도 후 재수집
             if not article_data_list:
-                logging.warning("⚠️ 수집된 게시물 URL이 없습니다")
+                logging.warning("⚠️ 첫 번째 수집 실패, 스크롤/더보기 시도 후 재수집")
+                
+                # 스크롤 및 더보기 버튼 클릭 시도
+                for i in range(3):
+                    try:
+                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
+                        time.sleep(1)
+                        
+                        # 더보기 버튼 찾아서 클릭
+                        more_buttons = self.driver.find_elements(By.CSS_SELECTOR, 
+                            '.more, .btn_more, .load_more, button[onclick*="more"], button[onclick*="load"]')
+                        for btn in more_buttons:
+                            try:
+                                if btn.is_displayed() and btn.is_enabled():
+                                    btn.click()
+                                    time.sleep(2)
+                                    break
+                            except:
+                                continue
+                    except:
+                        pass
+                
+                # 재수집 시도
+                article_data_list = self._collect_article_urls_safely(cafe_config)
+            
+            if not article_data_list:
+                logging.error("❌ 게시물 URL 수집 완전 실패")
                 return results
             
             logging.info(f"📊 수집된 게시물: {len(article_data_list)}개")
             
-            # 4단계: 각 게시물을 개별적으로 처리 (매번 새로 접근)
+            # 5단계: 각 게시물을 개별적으로 처리 (매번 새로 접근)
             max_articles = 10
             processed = 0
             
@@ -860,14 +1078,19 @@ class NaverCafeCrawler:
                 try:
                     logging.info(f"🔄 [{i+1}/{len(article_data_list[:20])}] 게시물 처리 중...")
                     
-                    # 게시물 페이지로 직접 이동
-                    self.driver.get(article_data['url'])
+                    # 게시물 페이지로 직접 이동 (데스크톱 강제)
+                    article_url = article_data['url']
+                    if '&web=1' not in article_url:
+                        article_url += '&web=1'
+                    
+                    self.driver.get(article_url)
                     time.sleep(3)
                     
-                    # 매번 iframe 재전환
-                    if not self.switch_to_cafe_iframe():
-                        logging.warning(f"⚠️ [{i+1}] iframe 재전환 실패, 건너뜀")
-                        continue
+                    # 매번 iframe 재전환 (더 짧은 타임아웃으로)
+                    if not self.switch_to_cafe_iframe(max_tries=2, timeout_each=20, debug_screenshot=False):
+                        logging.warning(f"⚠️ [{i+1}] iframe 재전환 실패, iframeless 모드로 시도")
+                        # iframe 없이도 내용 추출 시도
+                        pass
                     
                     # 제목, 작성자, 내용 추출
                     title = article_data.get('title', '제목 없음')
@@ -926,6 +1149,26 @@ class NaverCafeCrawler:
             
         except Exception as e:
             logging.error(f"❌ 크롤링 오류: {e}")
+            
+            # 실패 시 상세 디버깅 정보 수집
+            try:
+                debug_info = {
+                    'current_url': self.driver.current_url,
+                    'title': self.driver.title,
+                    'window_handles': len(self.driver.window_handles),
+                    'page_source_length': len(self.driver.page_source)
+                }
+                logging.error(f"🔍 실패 시 디버깅 정보: {debug_info}")
+                
+                # 실패 스크린샷 저장
+                if os.getenv('DEBUG_SCREENSHOT_ENABLED', 'true').lower() == 'true':
+                    timestamp = int(time.time())
+                    screenshot_path = f"crawl_fail_{timestamp}.png"
+                    self.driver.save_screenshot(screenshot_path)
+                    logging.error(f"📷 실패 스크린샷 저장: {screenshot_path}")
+                    
+            except Exception as debug_error:
+                logging.error(f"❌ 디버깅 정보 수집 실패: {debug_error}")
         
         return results
             
