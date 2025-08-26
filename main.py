@@ -138,35 +138,170 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """
-        게시물 내용 가져오기 - 직접적인 방법 우선 사용
+        게시물 내용 가져오기 - 완전히 새로운 접근
         """
         try:
-            logging.info(f"📖 직접 내용 추출 시도: {url}")
+            logging.info(f"📖 게시물 내용 추출 시작: {url}")
             
-            # 먼저 직접적인 방법으로 시도
-            direct_content = self._direct_content_extraction(url)
-            if direct_content and len(direct_content.strip()) > 50:
-                if "We're sorry but web-pc doesn't work properly" not in direct_content:
-                    logging.info(f"✅ 직접 추출 성공: {len(direct_content)}자")
-                    return direct_content
+            # URL 유효성 검사
+            if not url or 'naver.com' not in url:
+                return "[잘못된 URL]"
             
-            # 직접 방법 실패 시 ContentExtractor 사용
-            logging.info(f"🔄 ContentExtractor로 재시도: {url}")
-            result = self.content_extractor.extract_content(url)
+            # 로그인 페이지인지 확인
+            if 'nid.naver.com' in url or 'login' in url.lower():
+                logging.warning("⚠️ 로그인 페이지 URL 감지, 건너뜀")
+                return "[로그인 페이지 - 내용 없음]"
             
-            if result.success and result.content and len(result.content.strip()) > 50:
-                if "We're sorry but web-pc doesn't work properly" not in result.content:
-                    logging.info(f"✅ ContentExtractor 성공: {len(result.content)}자 (방법: {result.extraction_method.value})")
-                    return result.content
+            # 게시물 페이지로 이동
+            logging.info(f"🌐 페이지 이동: {url}")
+            self.driver.get(url)
             
-            # 모든 방법 실패 시 폴백
-            logging.warning("⚠️ 모든 추출 방법 실패, 폴백 시도")
-            return self._fallback_content_extraction(url)
+            # 로그인 페이지로 리다이렉트 되었는지 확인
+            time.sleep(3)
+            current_url = self.driver.current_url
+            if 'nid.naver.com' in current_url or 'login' in current_url.lower():
+                logging.warning("⚠️ 로그인 페이지로 리다이렉트됨, 재로그인 시도")
+                if not self.login_naver():
+                    return "[로그인 실패 - 내용 접근 불가]"
+                # 재로그인 후 다시 게시물 페이지로
+                self.driver.get(url)
+                time.sleep(5)
+            
+            # iframe 처리
+            try:
+                logging.info("🔄 iframe 전환 시도")
+                self.wait.until(EC.frame_to_be_available_and_switch_to_it('cafe_main'))
+                logging.info("✅ iframe 전환 성공")
+                time.sleep(5)
+            except:
+                logging.warning("⚠️ iframe 전환 실패, 메인 페이지에서 진행")
+            
+            # 페이지 완전 로딩 대기
+            try:
+                self.wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
+                time.sleep(3)
+            except:
+                pass
+            
+            # 실제 내용 추출
+            content = self._extract_real_content()
+            
+            # iframe에서 나오기
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+            
+            if content and len(content.strip()) > 30:
+                # 로그인 관련 텍스트가 포함되어 있는지 확인
+                login_keywords = ['ID/Phone number', 'Stay Signed in', 'IP Security', 'Passkey login', 'NAVER Corp']
+                if any(keyword in content for keyword in login_keywords):
+                    logging.warning("⚠️ 로그인 페이지 내용 감지됨")
+                    return "[로그인 페이지 내용 - 실제 게시물 접근 실패]"
+                
+                logging.info(f"✅ 내용 추출 성공: {len(content)}자")
+                return content
+            else:
+                logging.warning("⚠️ 내용 추출 실패 또는 내용 부족")
+                return "[내용 추출 실패]"
                 
         except Exception as e:
             logging.error(f"❌ 내용 추출 중 오류: {e}")
-            return self._fallback_content_extraction(url)
+            try:
+                self.driver.switch_to.default_content()
+            except:
+                pass
+            return f"[오류 발생: {str(e)[:100]}]"
     
+    def _extract_real_content(self) -> str:
+        """실제 게시물 내용만 추출"""
+        try:
+            content_parts = []
+            
+            # F-E 카페 SmartEditor 선택자들 (우선순위 순)
+            selectors = [
+                # SmartEditor 3.0
+                '.se-main-container .se-component .se-text-paragraph',
+                '.se-main-container .se-text',
+                '.se-main-container p',
+                '.se-main-container div',
+                
+                # SmartEditor 2.0
+                '.se-component-content',
+                '.se-text-paragraph',
+                
+                # 일반 게시물
+                '.article_viewer .se-main-container',
+                '.post-view .article-board-content',
+                '.ArticleContentBox',
+                '#content-area .se-main-container',
+                
+                # 레거시
+                '.article_viewer',
+                '.board-content',
+                '.content_text',
+                '#content-area'
+            ]
+            
+            for selector in selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        for element in elements:
+                            text = element.text.strip()
+                            if text and len(text) > 10:
+                                # 불필요한 텍스트 필터링
+                                if not self._is_unwanted_text(text):
+                                    content_parts.append(text)
+                        
+                        if content_parts:
+                            content = '\n'.join(content_parts)
+                            if len(content) > 50:
+                                logging.info(f"✅ 선택자 '{selector}' 성공: {len(content)}자")
+                                return content
+                except Exception as e:
+                    logging.debug(f"선택자 {selector} 실패: {e}")
+                    continue
+            
+            # 모든 선택자 실패 시 텍스트 요소 전체 스캔
+            logging.info("🔍 전체 텍스트 요소 스캔 시작")
+            all_text_elements = self.driver.find_elements(By.CSS_SELECTOR, 'p, div, span')
+            
+            for element in all_text_elements:
+                try:
+                    text = element.text.strip()
+                    if text and len(text) > 20 and not self._is_unwanted_text(text):
+                        content_parts.append(text)
+                except:
+                    continue
+            
+            if content_parts:
+                # 중복 제거
+                unique_parts = list(dict.fromkeys(content_parts))
+                content = '\n'.join(unique_parts[:15])  # 처음 15개만
+                if len(content) > 100:
+                    logging.info(f"✅ 전체 스캔 성공: {len(content)}자")
+                    return content
+            
+            return ""
+            
+        except Exception as e:
+            logging.error(f"❌ 실제 내용 추출 실패: {e}")
+            return ""
+    
+    def _is_unwanted_text(self, text: str) -> bool:
+        """불필요한 텍스트인지 판단"""
+        unwanted_keywords = [
+            'ID/Phone number', 'Stay Signed in', 'IP Security', 'Passkey login',
+            'NAVER Corp', 'All Rights Reserved', 'javascript', 'cookie',
+            'privacy', 'terms', 'login', 'sign in', 'forgot', 'customer service',
+            'menu', 'navigation', 'footer', 'header', 'sidebar', 'advertisement',
+            'loading', 'please wait', 'error', '오류', '로딩', '메뉴', '네비게이션'
+        ]
+        
+        text_lower = text.lower()
+        return any(keyword.lower() in text_lower for keyword in unwanted_keywords)
+
     def _direct_content_extraction(self, url: str) -> str:
         """직접적인 내용 추출 방법"""
         try:
@@ -405,8 +540,8 @@ class NaverCafeCrawler:
             
             logging.info(f"📊 공지 제외 실제 게시물: {len(actual_articles)}개")
             
-            # 최대 3개 처리 (테스트용으로 줄임)
-            max_articles = 3
+            # 최대 10개 처리 (실제 운영용)
+            max_articles = 10
             processed = 0
             
             for article in actual_articles[:20]:
