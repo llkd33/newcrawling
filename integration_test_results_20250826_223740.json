@@ -1,0 +1,19 @@
+{
+  "start_time": "2025-08-26T22:37:40.793090",
+  "test_suites": [],
+  "summary": {
+    "total_suites": 0,
+    "passed_suites": 0,
+    "failed_suites": 0,
+    "total_tests": 0,
+    "passed_tests": 0,
+    "failed_tests": 0
+  },
+  "environment": {
+    "python_version": "3.12.7 | packaged by Anaconda, Inc. | (main, Oct  4 2024, 08:22:19) [Clang 14.0.6 ]",
+    "github_actions": false,
+    "headless_mode": true,
+    "test_timestamp": "20250826_223740"
+  },
+  "fatal_error": "필수 조건 미충족"
+}

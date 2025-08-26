@@ -2,11 +2,10 @@ name: Naver Cafe Crawler
 
 on:
   schedule:
-    # 한국 시간(KST) 기준 09:00, 12:00, 17:00
-    # UTC로는 00:00, 03:00, 08:00
-    - cron: '0 0 * * *'    # KST 09:00
-    - cron: '0 3 * * *'    # KST 12:00
-    - cron: '0 8 * * *'    # KST 17:00
+    # 한국 시간(KST) 기준 09:00, 17:00 (오전 9시, 오후 5시)
+    # UTC로는 00:00, 08:00
+    - cron: '0 0 * * *'    # KST 09:00 (오전 9시)
+    - cron: '0 8 * * *'    # KST 17:00 (오후 5시)
   
   # 수동 실행을 위한 트리거
   workflow_dispatch:
@@ -82,6 +81,13 @@ jobs:
         
         # GitHub Actions 환경 표시
         GITHUB_ACTIONS: true
+        
+        # 새로운 콘텐츠 추출 설정
+        CONTENT_EXTRACTION_TIMEOUT: 30
+        CONTENT_MIN_LENGTH: 30
+        CONTENT_MAX_LENGTH: 2000
+        DEBUG_SCREENSHOT_ENABLED: true
+        EXTRACTION_RETRY_COUNT: 3
       run: |
         python main.py
     
