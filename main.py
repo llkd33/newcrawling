@@ -151,7 +151,61 @@ class NaverCafeCrawler:
             # 내용 추출 시도
             content = ""
             
-            # 방법 1: 모든 가능한 선택자로 시도
+            # 방법 1: SmartEditor 전용 파서 우선 시도
+            try:
+                # SmartEditor 컨테이너 대기
+                WebDriverWait(self.driver, 8).until(
+                    lambda d: len(d.find_elements(By.CSS_SELECTOR, '.se-main-container')) > 0
+                )
+            except Exception:
+                pass
+
+            try:
+                se_container = None
+                se_candidates = self.driver.find_elements(By.CSS_SELECTOR, '.se-main-container')
+                if se_candidates:
+                    se_container = se_candidates[0]
+                    # 문단 텍스트 추출
+                    paragraphs = se_container.find_elements(By.CSS_SELECTOR, '.se-text-paragraph')
+                    text_parts = []
+                    for p in paragraphs:
+                        t = (p.text or '').strip()
+                        if not t:
+                            continue
+                        # 제로폭 문자 제거
+                        t = t.replace('\u200b', '').replace('\ufeff', '').replace('​', '')
+                        if t:
+                            text_parts.append(t)
+
+                    # 이미지 링크 추출 (상위 5개)
+                    img_urls = []
+                    try:
+                        imgs = se_container.find_elements(By.CSS_SELECTOR, 'img')
+                        seen = set()
+                        for img in imgs:
+                            src = (img.get_attribute('src') or '').strip()
+                            if not src:
+                                continue
+                            if src in seen:
+                                continue
+                            seen.add(src)
+                            img_urls.append(src)
+                            if len(img_urls) >= 5:
+                                break
+                    except:
+                        pass
+
+                    se_text = '\n'.join(text_parts).strip()
+                    if se_text and len(se_text) > 20 and "doesn't work properly without JavaScript" not in se_text:
+                        content = se_text
+                        # 이미지 URL을 꼬리말로 첨부
+                        if img_urls:
+                            content += "\n\n[이미지 링크]\n" + '\n'.join(img_urls)
+                        logging.info(f"✅ SmartEditor에서 내용 추출: {len(content)}자")
+            except Exception:
+                pass
+
+            # 방법 2: 모든 가능한 선택자로 시도
             selectors = [
                 '.se-main-container',
                 '.ContentRenderer',
@@ -177,26 +231,27 @@ class NaverCafeCrawler:
                 pass
 
             # Try to read from selectors, retry if we hit web-pc JS-disabled placeholder
-            for selector in selectors:
-                try:
-                    elem = self.driver.find_element(By.CSS_SELECTOR, selector)
-                    text = elem.text.strip()
-                    if text:
-                        # Detect SPA placeholder complaining about disabled JS
-                        if "doesn't work properly without JavaScript" in text:
-                            logging.info("⏳ JS 렌더링 대기 후 재시도")
-                            time.sleep(3)
-                            self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
-                            time.sleep(2)
-                            text = elem.text.strip()
-                        if text and len(text) > 20 and "doesn't work properly without JavaScript" not in text:
-                            content = text
-                            logging.info(f"✅ {selector}에서 내용 발견: {len(text)}자")
-                            break
-                except Exception:
-                    continue
+            if not content:
+                for selector in selectors:
+                    try:
+                        elem = self.driver.find_element(By.CSS_SELECTOR, selector)
+                        text = elem.text.strip()
+                        if text:
+                            # Detect SPA placeholder complaining about disabled JS
+                            if "doesn't work properly without JavaScript" in text:
+                                logging.info("⏳ JS 렌더링 대기 후 재시도")
+                                time.sleep(3)
+                                self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                                time.sleep(2)
+                                text = elem.text.strip()
+                            if text and len(text) > 20 and "doesn't work properly without JavaScript" not in text:
+                                content = text
+                                logging.info(f"✅ {selector}에서 내용 발견: {len(text)}자")
+                                break
+                    except Exception:
+                        continue
             
-            # 방법 2: JavaScript로 강제 추출
+            # 방법 3: JavaScript로 강제 추출
             if not content:
                 try:
                     js_content = self.driver.execute_script("""
@@ -231,8 +286,8 @@ class NaverCafeCrawler:
                         logging.info(f"✅ JavaScript로 내용 추출: {len(content)}자")
                 except:
                     pass
-            
-            # 방법 3: 특정 태그들 시도
+
+            # 방법 4: 특정 태그들 시도
             if not content:
                 try:
                     # p 태그들 모으기
