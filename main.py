@@ -138,96 +138,175 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """
-        게시물 내용 가져오기 - 새로운 ContentExtractor 사용
-        기존의 복잡한 로직을 모듈화된 시스템으로 교체
+        게시물 내용 가져오기 - 직접적인 방법 우선 사용
         """
         try:
-            logging.info(f"📖 새로운 ContentExtractor로 내용 추출: {url}")
+            logging.info(f"📖 직접 내용 추출 시도: {url}")
             
-            # 새로운 ContentExtractor 사용
+            # 먼저 직접적인 방법으로 시도
+            direct_content = self._direct_content_extraction(url)
+            if direct_content and len(direct_content.strip()) > 50:
+                if "We're sorry but web-pc doesn't work properly" not in direct_content:
+                    logging.info(f"✅ 직접 추출 성공: {len(direct_content)}자")
+                    return direct_content
+            
+            # 직접 방법 실패 시 ContentExtractor 사용
+            logging.info(f"🔄 ContentExtractor로 재시도: {url}")
             result = self.content_extractor.extract_content(url)
             
             if result.success and result.content and len(result.content.strip()) > 50:
-                # JavaScript 오류 메시지 체크
-                if "We're sorry but web-pc doesn't work properly" in result.content:
-                    logging.warning("⚠️ JavaScript 오류 메시지 감지, 폴백 시도")
-                    return self._fallback_content_extraction(url)
-                
-                logging.info(f"✅ 내용 추출 성공: {len(result.content)}자 (방법: {result.extraction_method.value}, 품질: {result.quality_score:.2f})")
-                return result.content
-            else:
-                logging.warning(f"⚠️ 내용 추출 실패 또는 내용 부족: {result.error_message}")
-                return self._fallback_content_extraction(url)
+                if "We're sorry but web-pc doesn't work properly" not in result.content:
+                    logging.info(f"✅ ContentExtractor 성공: {len(result.content)}자 (방법: {result.extraction_method.value})")
+                    return result.content
+            
+            # 모든 방법 실패 시 폴백
+            logging.warning("⚠️ 모든 추출 방법 실패, 폴백 시도")
+            return self._fallback_content_extraction(url)
                 
         except Exception as e:
-            logging.error(f"❌ ContentExtractor 사용 중 오류: {e}")
+            logging.error(f"❌ 내용 추출 중 오류: {e}")
             return self._fallback_content_extraction(url)
     
-    def _fallback_content_extraction(self, url: str) -> str:
-        """폴백 내용 추출 방법"""
+    def _direct_content_extraction(self, url: str) -> str:
+        """직접적인 내용 추출 방법"""
         try:
-            logging.info(f"🔧 폴백 내용 추출 시도: {url}")
+            logging.info(f"🎯 직접 추출 시작: {url}")
             
-            # 현재 페이지로 이동
+            # 페이지 이동
             self.driver.get(url)
-            time.sleep(5)
+            time.sleep(8)  # 충분한 로딩 시간
             
-            # iframe 전환 시도
+            # F-E 카페 특화 추출
+            content = ""
+            
+            # 1. iframe 전환 시도
             try:
-                self.driver.switch_to.frame('cafe_main')
-                time.sleep(3)
+                self.wait.until(EC.frame_to_be_available_and_switch_to_it('cafe_main'))
+                logging.info("✅ iframe 전환 성공")
+                time.sleep(5)
             except:
-                pass
+                logging.warning("⚠️ iframe 전환 실패, 메인 페이지에서 시도")
             
-            # 다양한 선택자로 내용 추출 시도
-            content_selectors = [
+            # 2. F-E 카페 전용 선택자들
+            fe_selectors = [
+                '.se-main-container .se-component',
                 '.se-main-container',
-                '.se-component',
-                '#content-area',
-                '.article_viewer',
+                '.article_viewer .se-main-container',
+                '.post-view .se-main-container',
+                '.ArticleContentBox .se-main-container',
+                '.se-component-content',
+                '.se-text-paragraph',
                 '.article-board-content',
-                '.content_text',
                 '.post-content',
-                '.board-content'
+                '#content-area .se-main-container'
             ]
             
-            for selector in content_selectors:
+            for selector in fe_selectors:
                 try:
                     elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
                     if elements:
-                        content = elements[0].text.strip()
-                        if content and len(content) > 30:
-                            logging.info(f"✅ 폴백 추출 성공: {len(content)}자 (선택자: {selector})")
-                            return content
+                        for element in elements:
+                            text = element.text.strip()
+                            if text and len(text) > 30:
+                                content += text + "\n"
+                        
+                        if content and len(content.strip()) > 50:
+                            logging.info(f"✅ 직접 추출 성공 (선택자: {selector}): {len(content)}자")
+                            self.driver.switch_to.default_content()
+                            return content.strip()
+                except Exception as e:
+                    logging.debug(f"선택자 {selector} 실패: {e}")
+                    continue
+            
+            # 3. 일반적인 선택자들
+            general_selectors = [
+                '.article_viewer',
+                '.board-content',
+                '.content_text',
+                '#content-area',
+                '.post-content',
+                '.article-content'
+            ]
+            
+            for selector in general_selectors:
+                try:
+                    elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                    if elements:
+                        text = elements[0].text.strip()
+                        if text and len(text) > 50:
+                            logging.info(f"✅ 일반 선택자 성공 ({selector}): {len(text)}자")
+                            self.driver.switch_to.default_content()
+                            return text
                 except:
                     continue
             
-            # 최후 수단: body 전체에서 추출
+            self.driver.switch_to.default_content()
+            return ""
+            
+        except Exception as e:
+            logging.error(f"❌ 직접 추출 실패: {e}")
             try:
-                body = self.driver.find_element(By.TAG_NAME, 'body')
-                content = body.text.strip()
-                if content and len(content) > 100:
-                    # 불필요한 텍스트 제거
-                    lines = content.split('\n')
-                    filtered_lines = []
-                    for line in lines:
-                        line = line.strip()
-                        if line and not any(skip in line.lower() for skip in ['javascript', 'cookie', 'privacy', 'terms']):
-                            filtered_lines.append(line)
+                self.driver.switch_to.default_content()
+            except:
+                pass
+            return ""
+    
+    def _fallback_content_extraction(self, url: str) -> str:
+        """폴백 내용 추출 방법 - 최후의 수단"""
+        try:
+            logging.info(f"🆘 최후 수단 추출 시도: {url}")
+            
+            # 페이지 새로고침
+            self.driver.refresh()
+            time.sleep(10)
+            
+            # 모든 텍스트 요소에서 추출 시도
+            try:
+                # 모든 p, div, span 태그에서 텍스트 수집
+                text_elements = self.driver.find_elements(By.CSS_SELECTOR, 'p, div, span')
+                content_parts = []
+                
+                for element in text_elements:
+                    try:
+                        text = element.text.strip()
+                        if text and len(text) > 10:
+                            # 불필요한 텍스트 필터링
+                            if not any(skip in text.lower() for skip in [
+                                'javascript', 'cookie', 'privacy', 'terms', 'login', 'menu',
+                                'navigation', 'footer', 'header', 'sidebar', 'advertisement'
+                            ]):
+                                content_parts.append(text)
+                    except:
+                        continue
+                
+                if content_parts:
+                    # 중복 제거 및 정리
+                    unique_parts = []
+                    for part in content_parts:
+                        if part not in unique_parts and len(part) > 15:
+                            unique_parts.append(part)
                     
-                    filtered_content = '\n'.join(filtered_lines[:20])  # 처음 20줄만
-                    if len(filtered_content) > 50:
-                        logging.info(f"✅ 최후 수단 추출 성공: {len(filtered_content)}자")
-                        return filtered_content
+                    final_content = '\n'.join(unique_parts[:10])  # 처음 10개 문단만
+                    if len(final_content) > 100:
+                        logging.info(f"✅ 최후 수단 성공: {len(final_content)}자")
+                        return final_content
             except:
                 pass
             
-            self.driver.switch_to.default_content()
-            return f"[내용 추출 실패]\n\n게시물 링크: {url}\n\n수동으로 확인이 필요합니다."
+            # 정말 최후의 수단: 제목만이라도 저장
+            try:
+                title_element = self.driver.find_element(By.CSS_SELECTOR, 'h1, h2, h3, .title, .subject')
+                title = title_element.text.strip()
+                if title:
+                    return f"[제목만 추출됨]\n\n{title}\n\n전체 내용을 보려면 링크를 확인하세요: {url}"
+            except:
+                pass
+            
+            return f"[내용 추출 완전 실패]\n\n게시물 링크: {url}\n\n수동 확인이 필요합니다."
             
         except Exception as e:
-            logging.error(f"❌ 폴백 추출 실패: {e}")
-            return f"[내용 추출 실패]\n\n게시물 링크: {url}\n\n오류: {str(e)}"
+            logging.error(f"❌ 최후 수단도 실패: {e}")
+            return f"[시스템 오류]\n\n게시물 링크: {url}\n\n오류: {str(e)[:100]}"
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
         """카페 게시물 크롤링"""
