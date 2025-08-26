@@ -47,7 +47,8 @@ class NaverCafeCrawler:
         
         # GitHub Actions 환경
         if os.getenv('GITHUB_ACTIONS'):
-            options.add_argument('--headless')
+            # Use new headless for better JS rendering in CI
+            options.add_argument('--headless=new')
             options.add_argument('--no-sandbox')
             options.add_argument('--disable-dev-shm-usage')
             options.add_argument('--disable-gpu')
@@ -126,14 +127,25 @@ class NaverCafeCrawler:
             self.driver.switch_to.window(self.driver.window_handles[-1])
             
             # 페이지 로딩 대기
-            time.sleep(15)  # 충분히 기다리기
+            # Ensure document is ready
+            for _ in range(10):
+                try:
+                    ready = self.driver.execute_script('return document.readyState')
+                    if ready == 'complete':
+                        break
+                    time.sleep(1)
+                except:
+                    time.sleep(1)
+            time.sleep(3)
             
             # iframe 전환
             try:
-                self.driver.switch_to.frame('cafe_main')
+                WebDriverWait(self.driver, 15).until(
+                    EC.frame_to_be_available_and_switch_to_it((By.NAME, 'cafe_main'))
+                )
                 logging.info("✅ iframe 전환 성공")
-                time.sleep(3)
-            except:
+                time.sleep(2)
+            except Exception:
                 logging.warning("⚠️ iframe 전환 실패")
             
             # 내용 추출 시도
@@ -156,15 +168,32 @@ class NaverCafeCrawler:
                 'div.content_box'
             ]
             
+            # Wait until one of the content selectors appears
+            try:
+                WebDriverWait(self.driver, 15).until(
+                    lambda d: any([len(d.find_elements(By.CSS_SELECTOR, s)) > 0 for s in selectors])
+                )
+            except Exception:
+                pass
+
+            # Try to read from selectors, retry if we hit web-pc JS-disabled placeholder
             for selector in selectors:
                 try:
                     elem = self.driver.find_element(By.CSS_SELECTOR, selector)
                     text = elem.text.strip()
-                    if text and len(text) > 20:
-                        content = text
-                        logging.info(f"✅ {selector}에서 내용 발견: {len(text)}자")
-                        break
-                except:
+                    if text:
+                        # Detect SPA placeholder complaining about disabled JS
+                        if "doesn't work properly without JavaScript" in text:
+                            logging.info("⏳ JS 렌더링 대기 후 재시도")
+                            time.sleep(3)
+                            self.driver.execute_script('window.scrollTo(0, document.body.scrollHeight);')
+                            time.sleep(2)
+                            text = elem.text.strip()
+                        if text and len(text) > 20 and "doesn't work properly without JavaScript" not in text:
+                            content = text
+                            logging.info(f"✅ {selector}에서 내용 발견: {len(text)}자")
+                            break
+                except Exception:
                     continue
             
             # 방법 2: JavaScript로 강제 추출
@@ -197,7 +226,7 @@ class NaverCafeCrawler:
                         return maxText;
                     """)
                     
-                    if js_content and len(js_content) > 20:
+                    if js_content and len(js_content) > 20 and "doesn't work properly without JavaScript" not in js_content:
                         content = js_content
                         logging.info(f"✅ JavaScript로 내용 추출: {len(content)}자")
                 except:
@@ -288,18 +317,58 @@ class NaverCafeCrawler:
                 logging.warning("게시물을 찾을 수 없습니다")
                 return results
             
-            # 공지 제외
+            # 공지 제외 (여러 패턴 처리)
             actual_articles = []
             for article in articles:
                 try:
-                    text = article.text.strip()
-                    if not text or '공지' in text:
+                    is_notice = False
+                    # 클래스 기반
+                    try:
+                        cls = (article.get_attribute('class') or '').lower()
+                        if 'notice' in cls:
+                            is_notice = True
+                    except:
+                        pass
+
+                    # 시각적 아이콘/표시 기반
+                    if not is_notice:
+                        try:
+                            if article.find_elements(By.CSS_SELECTOR, 'img[alt="공지"], .notice, .icon_notice, .board-notice, .ArticleList__notice'):
+                                is_notice = True
+                        except:
+                            pass
+
+                    # 셀 텍스트 기반
+                    if not is_notice:
+                        try:
+                            td_article_elems = article.find_elements(By.CSS_SELECTOR, 'td, th, .td_article')
+                            for td in td_article_elems[:2]:
+                                t = td.text.strip()
+                                if t == '공지' or t.startswith('공지') or '[공지]' in t:
+                                    is_notice = True
+                                    break
+                        except:
+                            pass
+
+                    # 전체 텍스트 검사 (최후의 수단)
+                    if not is_notice:
+                        text = (article.text or '').strip()
+                        if not text or '공지' in text:
+                            # 공백이거나 공지 포함이면 제외
+                            if '공지' in text:
+                                is_notice = True
+                            else:
+                                # 공백은 제외하지 않고 계속 진행
+                                pass
+
+                    if is_notice:
                         continue
                     actual_articles.append(article)
                 except:
+                    # 오류 시에는 보수적으로 포함
                     actual_articles.append(article)
             
-            logging.info(f"📊 실제 게시물: {len(actual_articles)}개")
+            logging.info(f"📊 공지 제외 실제 게시물: {len(actual_articles)}개")
             
             # 최대 4개 처리
             max_articles = 4
