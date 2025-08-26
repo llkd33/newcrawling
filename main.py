@@ -163,6 +163,13 @@ class NaverCafeCrawler:
             except:
                 logging.warning("⚠️ iframe 전환 실패")
             
+            # 페이지 완전 로딩 대기
+            time.sleep(3)
+            
+            # 디버깅: 현재 페이지 정보 출력
+            logging.info(f"🔍 현재 URL: {self.driver.current_url}")
+            logging.info(f"🔍 페이지 제목: {self.driver.title}")
+            
             # JavaScript로 직접 내용 추출
             content = self._extract_with_javascript()
             
@@ -173,10 +180,15 @@ class NaverCafeCrawler:
                 pass
             
             if content and len(content.strip()) > 10:
-                logging.info(f"✅ JavaScript 추출 성공: {len(content)}자")
+                # JavaScript 오류 메시지 체크
+                if "We're sorry but web-pc doesn't work properly" in content:
+                    logging.warning("⚠️ JavaScript 오류 메시지 감지, 대체 방법 시도")
+                    content = self._extract_with_alternative_method()
+                
+                logging.info(f"✅ 내용 추출 성공: {len(content)}자")
                 return content[:1500]
             else:
-                return "JavaScript 추출 실패"
+                return "내용 추출 실패"
                 
         except Exception as e:
             logging.error(f"❌ JavaScript 추출 오류: {e}")
@@ -369,6 +381,70 @@ class NaverCafeCrawler:
         except Exception as e:
             logging.error(f"❌ JavaScript 작성자 추출 실패: {e}")
             return "Unknown"
+    
+    def _extract_with_alternative_method(self) -> str:
+        """대체 추출 방법 - 더 직접적인 접근"""
+        try:
+            # 더 간단한 JavaScript로 실제 텍스트만 추출
+            simple_js = """
+            // 모든 텍스트 노드를 찾아서 실제 내용만 추출
+            var walker = document.createTreeWalker(
+                document.body,
+                NodeFilter.SHOW_TEXT,
+                null,
+                false
+            );
+            
+            var textContent = [];
+            var node;
+            
+            while (node = walker.nextNode()) {
+                var text = node.textContent.trim();
+                var parent = node.parentElement;
+                
+                // 부모 요소가 se-text-paragraph인 경우 우선 수집
+                if (parent && parent.className && parent.className.includes('se-text-paragraph')) {
+                    if (text.length > 3 && !text.includes('javascript') && !text.includes('We\\'re sorry')) {
+                        textContent.push(text);
+                    }
+                }
+            }
+            
+            // se-text-paragraph에서 찾지 못했으면 일반 텍스트 수집
+            if (textContent.length === 0) {
+                walker = document.createTreeWalker(
+                    document.body,
+                    NodeFilter.SHOW_TEXT,
+                    null,
+                    false
+                );
+                
+                while (node = walker.nextNode()) {
+                    var text = node.textContent.trim();
+                    if (text.length > 10 && 
+                        !text.includes('javascript') && 
+                        !text.includes('We\\'re sorry') &&
+                        !text.includes('NAVER') &&
+                        !text.includes('로그인')) {
+                        textContent.push(text);
+                    }
+                }
+            }
+            
+            return textContent.slice(0, 10).join('\\n');
+            """
+            
+            result = self.driver.execute_script(simple_js)
+            
+            if result and len(result.strip()) > 20:
+                logging.info(f"✅ 대체 방법 성공: {len(result)}자")
+                return result
+            
+            return "대체 방법도 실패"
+            
+        except Exception as e:
+            logging.error(f"❌ 대체 방법 실패: {e}")
+            return "대체 방법 오류"
     
     def _is_system_text(self, text: str) -> bool:
         """시스템 텍스트인지 판단"""
@@ -737,25 +813,66 @@ class NaverCafeCrawler:
                     title = ""
                     link = ""
                     
-                    # 다양한 선택자로 시도
-                    selectors = [
-                        'a[href*="articles"]',  # F-E 카페
-                        'a[href*="articleid"]',  # 일반 카페
-                        'td.td_article a',
-                        'a.article',
-                        'a'
-                    ]
-                    
-                    for selector in selectors:
-                        try:
-                            link_elem = article.find_element(By.CSS_SELECTOR, selector)
-                            title = link_elem.text.strip()
-                            link = link_elem.get_attribute('href')
+                    # F-E 카페 전용 링크 추출 - JavaScript 사용
+                    try:
+                        js_extract_link = f"""
+                        var articles = document.querySelectorAll('div, tr, li');
+                        var result = null;
+                        
+                        for (var i = {i}; i < articles.length && i < {i+1}; i++) {{
+                            var article = articles[i];
+                            var links = article.querySelectorAll('a[href*="articles"], a[href*="articleid"]');
                             
-                            if title and link and ('articles/' in link or 'articleid=' in link):
-                                break
-                        except:
-                            continue
+                            for (var j = 0; j < links.length; j++) {{
+                                var link = links[j];
+                                var href = link.href;
+                                var text = link.innerText || link.textContent;
+                                
+                                if (href && text && text.trim().length > 3 && 
+                                    (href.includes('articles/') || href.includes('articleid='))) {{
+                                    result = {{
+                                        title: text.trim(),
+                                        url: href
+                                    }};
+                                    break;
+                                }}
+                            }}
+                            
+                            if (result) break;
+                        }}
+                        
+                        return result;
+                        """
+                        
+                        js_result = self.driver.execute_script(js_extract_link)
+                        
+                        if js_result and js_result.get('title') and js_result.get('url'):
+                            title = js_result['title']
+                            link = js_result['url']
+                            logging.info(f"✅ JavaScript 링크 추출 성공: {title[:30]}")
+                        else:
+                            # 폴백: 기존 방식
+                            selectors = [
+                                'a[href*="articles"]',
+                                'a[href*="articleid"]', 
+                                'td.td_article a',
+                                'a.article',
+                                'a'
+                            ]
+                            
+                            for selector in selectors:
+                                try:
+                                    link_elem = article.find_element(By.CSS_SELECTOR, selector)
+                                    title = link_elem.text.strip()
+                                    link = link_elem.get_attribute('href')
+                                    
+                                    if title and link and ('articles/' in link or 'articleid=' in link):
+                                        break
+                                except:
+                                    continue
+                    except Exception as e:
+                        logging.error(f"❌ JavaScript 링크 추출 오류: {e}")
+                        continue
                     
                     # 기본 검증
                     if not title or not link:
