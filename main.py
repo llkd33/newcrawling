@@ -138,72 +138,100 @@ class NaverCafeCrawler:
     
     def get_article_content(self, url: str) -> str:
         """
-        게시물 내용 가져오기 - 완전히 새로운 접근
+        게시물 내용 가져오기 - 단순하고 확실한 방법
         """
         try:
             logging.info(f"📖 게시물 내용 추출 시작: {url}")
             
             # URL 유효성 검사
             if not url or 'naver.com' not in url:
-                return "[잘못된 URL]"
-            
-            # 로그인 페이지인지 확인
-            if 'nid.naver.com' in url or 'login' in url.lower():
-                logging.warning("⚠️ 로그인 페이지 URL 감지, 건너뜀")
-                return "[로그인 페이지 - 내용 없음]"
+                return "게시물 링크가 올바르지 않습니다."
             
             # 게시물 페이지로 이동
-            logging.info(f"🌐 페이지 이동: {url}")
             self.driver.get(url)
+            time.sleep(5)
             
-            # 로그인 페이지로 리다이렉트 되었는지 확인
-            time.sleep(3)
-            current_url = self.driver.current_url
-            if 'nid.naver.com' in current_url or 'login' in current_url.lower():
-                logging.warning("⚠️ 로그인 페이지로 리다이렉트됨, 재로그인 시도")
-                if not self.login_naver():
-                    return "[로그인 실패 - 내용 접근 불가]"
-                # 재로그인 후 다시 게시물 페이지로
-                self.driver.get(url)
-                time.sleep(5)
+            # 로그인 페이지 체크
+            if 'nid.naver.com' in self.driver.current_url:
+                logging.warning("⚠️ 로그인 필요, 재로그인 시도")
+                if self.login_naver():
+                    self.driver.get(url)
+                    time.sleep(5)
+                else:
+                    return "로그인이 필요한 게시물입니다."
             
-            # iframe 처리
+            # iframe 전환
+            iframe_switched = False
             try:
-                logging.info("🔄 iframe 전환 시도")
                 self.wait.until(EC.frame_to_be_available_and_switch_to_it('cafe_main'))
+                iframe_switched = True
                 logging.info("✅ iframe 전환 성공")
                 time.sleep(5)
             except:
-                logging.warning("⚠️ iframe 전환 실패, 메인 페이지에서 진행")
+                logging.warning("⚠️ iframe 전환 실패")
             
-            # 페이지 완전 로딩 대기
+            # 내용 추출 - 단순한 방법부터
+            content = ""
+            
+            # 1. 가장 기본적인 텍스트 추출
             try:
-                self.wait.until(EC.presence_of_element_located((By.TAG_NAME, 'body')))
-                time.sleep(3)
-            except:
-                pass
+                body = self.driver.find_element(By.TAG_NAME, 'body')
+                all_text = body.text
+                
+                # 텍스트를 줄 단위로 분리하고 필터링
+                lines = all_text.split('\n')
+                content_lines = []
+                
+                for line in lines:
+                    line = line.strip()
+                    if len(line) > 5 and not self._is_system_text(line):
+                        content_lines.append(line)
+                
+                if content_lines:
+                    content = '\n'.join(content_lines[:20])  # 처음 20줄만
+                    
+            except Exception as e:
+                logging.error(f"기본 텍스트 추출 실패: {e}")
             
-            # 실제 내용 추출
-            content = self._extract_real_content()
+            # 2. 특정 선택자로 시도
+            if not content or len(content) < 50:
+                selectors = [
+                    '.se-main-container',
+                    '.article_viewer',
+                    '#content-area',
+                    '.post-content',
+                    '.board-content'
+                ]
+                
+                for selector in selectors:
+                    try:
+                        elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                        if elements:
+                            text = elements[0].text.strip()
+                            if text and len(text) > 30:
+                                content = text
+                                logging.info(f"✅ 선택자 '{selector}' 성공")
+                                break
+                    except:
+                        continue
             
             # iframe에서 나오기
-            try:
-                self.driver.switch_to.default_content()
-            except:
-                pass
+            if iframe_switched:
+                try:
+                    self.driver.switch_to.default_content()
+                except:
+                    pass
             
-            if content and len(content.strip()) > 30:
-                # 로그인 관련 텍스트가 포함되어 있는지 확인
-                login_keywords = ['ID/Phone number', 'Stay Signed in', 'IP Security', 'Passkey login', 'NAVER Corp']
-                if any(keyword in content for keyword in login_keywords):
-                    logging.warning("⚠️ 로그인 페이지 내용 감지됨")
-                    return "[로그인 페이지 내용 - 실제 게시물 접근 실패]"
+            # 결과 검증
+            if content and len(content.strip()) > 20:
+                # 로그인 관련 텍스트 체크
+                if self._contains_login_text(content):
+                    return "게시물에 접근할 수 없습니다. (로그인 필요)"
                 
                 logging.info(f"✅ 내용 추출 성공: {len(content)}자")
-                return content
+                return content[:1000]  # 최대 1000자로 제한
             else:
-                logging.warning("⚠️ 내용 추출 실패 또는 내용 부족")
-                return "[내용 추출 실패]"
+                return "게시물 내용을 찾을 수 없습니다."
                 
         except Exception as e:
             logging.error(f"❌ 내용 추출 중 오류: {e}")
@@ -211,7 +239,28 @@ class NaverCafeCrawler:
                 self.driver.switch_to.default_content()
             except:
                 pass
-            return f"[오류 발생: {str(e)[:100]}]"
+            return f"내용 추출 중 오류가 발생했습니다: {str(e)[:50]}"
+    
+    def _is_system_text(self, text: str) -> bool:
+        """시스템 텍스트인지 판단"""
+        system_keywords = [
+            'javascript', 'cookie', 'privacy', 'terms', 'login', 'menu',
+            'navigation', 'footer', 'header', 'advertisement', 'loading',
+            'ID/Phone number', 'Stay Signed in', 'IP Security', 'Passkey',
+            'NAVER Corp', '네이버', '로그인', '메뉴', '광고'
+        ]
+        
+        text_lower = text.lower()
+        return any(keyword.lower() in text_lower for keyword in system_keywords)
+    
+    def _contains_login_text(self, text: str) -> bool:
+        """로그인 관련 텍스트 포함 여부"""
+        login_keywords = [
+            'ID/Phone number', 'Stay Signed in', 'IP Security', 'Passkey login',
+            'NAVER Corp', 'All Rights Reserved', 'sign in', 'login'
+        ]
+        
+        return any(keyword in text for keyword in login_keywords)
     
     def _extract_real_content(self) -> str:
         """실제 게시물 내용만 추출"""
@@ -544,97 +593,80 @@ class NaverCafeCrawler:
             max_articles = 10
             processed = 0
             
-            for article in actual_articles[:20]:
+            # 게시물 처리 - 더 견고한 방식
+            for i, article in enumerate(actual_articles[:20]):
                 if processed >= max_articles:
+                    logging.info(f"🎯 목표 달성: {processed}개 처리 완료")
                     break
                 
                 try:
-                    # 제목과 링크 - 더 정확한 선택자 사용
-                    link_elem = None
+                    logging.info(f"🔄 [{i+1}/{len(actual_articles[:20])}] 게시물 처리 중...")
+                    
+                    # 제목과 링크 추출
                     title = ""
                     link = ""
                     
-                    # F-E 카페와 일반 카페 구분하여 처리
-                    if cafe_config['name'] == 'F-E 카페':
-                        # F-E 카페 전용 선택자
+                    # 다양한 선택자로 시도
+                    selectors = [
+                        'a[href*="articles"]',  # F-E 카페
+                        'a[href*="articleid"]',  # 일반 카페
+                        'td.td_article a',
+                        'a.article',
+                        'a'
+                    ]
+                    
+                    for selector in selectors:
                         try:
-                            link_elem = article.find_element(By.CSS_SELECTOR, 'a[href*="articles"]')
+                            link_elem = article.find_element(By.CSS_SELECTOR, selector)
                             title = link_elem.text.strip()
                             link = link_elem.get_attribute('href')
+                            
+                            if title and link and ('articles/' in link or 'articleid=' in link):
+                                break
                         except:
-                            try:
-                                # 대체 선택자
-                                link_elem = article.find_element(By.CSS_SELECTOR, 'a')
-                                title = link_elem.text.strip()
-                                link = link_elem.get_attribute('href')
-                            except:
-                                continue
-                    else:
-                        # 일반 카페 선택자
-                        for sel in ['a.article', 'td.td_article a', 'a[href*="articleid"]', 'a']:
-                            try:
-                                link_elem = article.find_element(By.CSS_SELECTOR, sel)
-                                title = link_elem.text.strip()
-                                link = link_elem.get_attribute('href')
-                                if link and ('articleid=' in link or 'articles/' in link):
-                                    break
-                            except:
-                                continue
+                            continue
                     
-                    # 유효성 검사
-                    if not title or not link or '공지' in title:
+                    # 기본 검증
+                    if not title or not link:
+                        logging.warning(f"⚠️ [{i+1}] 제목 또는 링크 없음, 건너뜀")
                         continue
                     
-                    # URL 정리 (잘못된 URL 형식 수정)
+                    if '공지' in title or len(title) < 3:
+                        logging.warning(f"⚠️ [{i+1}] 공지 또는 제목 부적절: {title[:20]}")
+                        continue
+                    
+                    # URL 정리
                     if link.endswith('#'):
                         link = link[:-1]
-                    
-                    # 상대 URL을 절대 URL로 변환
                     if link.startswith('/'):
                         link = 'https://cafe.naver.com' + link
                     
-                    # 중복 체크 (임시 비활성화 - 테스트용)
-                    article_id = link.split('articleid=')[-1].split('&')[0] if 'articleid=' in link else ""
+                    logging.info(f"📝 [{i+1}] 처리 시작: {title[:30]}...")
+                    logging.info(f"🔗 [{i+1}] URL: {link}")
                     
-                    # TODO: 테스트 완료 후 중복 체크 다시 활성화
-                    # try:
-                    #     notion = NotionDatabase()
-                    #     if notion.check_duplicate(link):
-                    #         logging.info(f"⏭️ 이미 저장됨: {title[:30]}...")
-                    #         continue
-                    # except:
-                    #     pass
+                    # 내용 추출
+                    try:
+                        content = self.get_article_content(link)
+                        logging.info(f"📄 [{i+1}] 내용 길이: {len(content)}자")
+                    except Exception as content_error:
+                        logging.error(f"❌ [{i+1}] 내용 추출 오류: {content_error}")
+                        content = f"내용 추출 중 오류 발생: {str(content_error)[:100]}"
                     
-                    logging.info(f"🔄 중복 체크 비활성화 - 강제 처리: {title[:30]}...")
-                    
-                    # 내용 크롤링
-                    logging.info(f"📖 크롤링 시작: {title[:30]}...")
-                    logging.info(f"🔗 URL: {link}")
-                    
-                    content = self.get_article_content(link)
-                    
-                    logging.info(f"📝 추출된 내용 길이: {len(content)}자")
-                    logging.info(f"📄 내용 미리보기: {content[:100]}...")
-
-                    # 내용 추출 실패 시 재시도 후 저장
-                    if "내용을 불러올 수 없습니다" in content:
-                        logging.warning(f"⚠️ 내용 추출 실패, 제목과 링크만 저장: {title[:30]}...")
-                        content = f"[내용 자동 추출 실패]\n\n제목: {title}\n\n원본 게시글을 확인하려면 URL을 클릭하세요."
-                    else:
-                        logging.info(f"✅ 내용 추출 성공: {title[:30]}...")
-                    
-                    # 작성자
+                    # 작성자 추출
                     author = "Unknown"
                     try:
-                        author = article.find_element(By.CSS_SELECTOR, 'td.td_name').text.strip()
+                        author_elem = article.find_element(By.CSS_SELECTOR, 'td.td_name, .name, .author')
+                        author = author_elem.text.strip() or "Unknown"
                     except:
                         pass
                     
-                    # 작성일
+                    # 작성일 추출
                     date_str = datetime.now().strftime('%Y-%m-%d')
                     try:
-                        date_elem = article.find_element(By.CSS_SELECTOR, 'td.td_date')
-                        date_str = date_elem.text.replace('.', '-').rstrip('-')
+                        date_elem = article.find_element(By.CSS_SELECTOR, 'td.td_date, .date, .time')
+                        date_text = date_elem.text.strip()
+                        if date_text:
+                            date_str = date_text.replace('.', '-').rstrip('-')
                     except:
                         pass
                     
@@ -644,7 +676,7 @@ class NaverCafeCrawler:
                         'author': author,
                         'date': date_str,
                         'url': link,
-                        'article_id': article_id,
+                        'article_id': link.split('/')[-1].split('?')[0],
                         'content': content,
                         'cafe_name': cafe_config['name'],
                         'crawled_at': datetime.now().isoformat()
@@ -652,13 +684,17 @@ class NaverCafeCrawler:
                     
                     results.append(data)
                     processed += 1
-                    logging.info(f"✅ [{processed}/{max_articles}] 완료")
+                    logging.info(f"✅ [{processed}/{max_articles}] 완료: {title[:30]}...")
                     
-                    time.sleep(2)
+                    # 다음 게시물 처리 전 잠시 대기
+                    time.sleep(1)
                     
                 except Exception as e:
-                    logging.error(f"게시물 오류: {e}")
+                    logging.error(f"❌ [{i+1}] 게시물 처리 오류: {e}")
+                    # 오류가 발생해도 다음 게시물 계속 처리
                     continue
+            
+            logging.info(f"🎯 게시물 처리 완료: {processed}개 성공")
             
             self.driver.switch_to.default_content()
             
