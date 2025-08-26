@@ -88,6 +88,9 @@ jobs:
         CONTENT_MAX_LENGTH: 2000
         DEBUG_SCREENSHOT_ENABLED: true
         EXTRACTION_RETRY_COUNT: 3
+        
+        # 클래식 엔드포인트 강제 사용 (SPA 우회)
+        FORCE_CLASSIC: 1
       run: |
         python main.py
     

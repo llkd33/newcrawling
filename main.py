@@ -13,6 +13,7 @@ import re
 from typing import List, Dict
 from dotenv import load_dotenv
 import hashlib
+import urllib.parse as urlparse
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -38,14 +39,118 @@ logging.basicConfig(
     ]
 )
 
+# ---------- 대범한 클래식 엔드포인트 헬퍼들 ----------
+
+def build_classic_list_url(club_id, board_id, user_display=50, page=None):
+    """클래식 ArticleList.nhn URL 생성"""
+    base = "https://cafe.naver.com/ArticleList.nhn"
+    params = {
+        "search.clubid": str(club_id),
+        "search.menuid": str(board_id), 
+        "userDisplay": str(user_display),
+    }
+    if page:
+        params["search.page"] = str(page)
+    return f"{base}?{urlparse.urlencode(params)}"
+
+def build_classic_read_url(club_id, article_id):
+    """클래식 ArticleRead.nhn URL 생성"""
+    return f"https://cafe.naver.com/ArticleRead.nhn?clubid={club_id}&articleid={article_id}"
+
+def is_spa_list_page(driver):
+    """리스트가 SPA(Next.js)면 True (cafe_main 미존재 + _next 존재)"""
+    try:
+        has_iframe = bool(driver.find_elements(By.CSS_SELECTOR, "#cafe_main"))
+        next_mark = "/_next/static/" in driver.page_source
+        return (not has_iframe) and next_mark
+    except Exception:
+        return False
+
+def robust_get(driver, url, retries=2, wait_complete=True):
+    """견고한 페이지 이동 (재시도 + 차단 감지)"""
+    for i in range(retries + 1):
+        try:
+            driver.get(url)
+            if wait_complete:
+                try:
+                    WebDriverWait(driver, 15).until(
+                        lambda d: d.execute_script("return document.readyState") == "complete"
+                    )
+                except:
+                    pass
+            
+            # 차단/오류 페이지 감지
+            page_source = driver.page_source.lower()
+            title = driver.title.lower()
+            
+            if any(keyword in page_source or keyword in title for keyword in 
+                   ["접근이 제한", "오류", "차단", "blocked", "error"]):
+                logging.warning(f"⚠️ 차단/오류 페이지 감지, 재시도 {i+1}/{retries+1}")
+                time.sleep(1.5)
+                continue
+                
+            return True
+            
+        except Exception as e:
+            logging.warning(f"⚠️ 페이지 이동 실패 (시도 {i+1}): {e}")
+            time.sleep(1)
+            
+    return False
+
 class NaverCafeCrawler:
-    """네이버 카페 크롤러"""
+    """네이버 카페 크롤러 - 클래식 엔드포인트 우회 버전"""
     
     def __init__(self):
         self.driver = None
         self.wait = None
         self.content_extractor = None
         self.setup_driver()
+    
+    def collect_article_ids_from_classic_list(self):
+        """
+        클래식 ArticleList에서 articleid 전수집 (문자열로만 수집)
+        """
+        ids = set()
+        
+        # iframe 전환 시도 (클래식 리스트도 iframe 안쪽인 경우가 많음)
+        switched = self.switch_to_cafe_iframe(max_tries=2, timeout_each=20, debug_screenshot=False)
+        
+        if not switched:
+            # iframe 없는 경우 페이지 소스에서 직접 파싱
+            logging.info("📄 iframe 없음, 페이지 소스에서 직접 articleid 추출")
+            html = self.driver.page_source
+            found_ids = re.findall(r"articleid=(\d+)", html)
+            ids.update(found_ids)
+            logging.info(f"✅ 페이지 소스에서 {len(found_ids)}개 articleid 발견")
+            return list(ids)
+        
+        # iframe 내부에서 링크 수집
+        try:
+            anchors = self.driver.find_elements(By.CSS_SELECTOR, "a[href*='articleid=']")
+            logging.info(f"🔍 iframe 내부에서 {len(anchors)}개 링크 발견")
+            
+            for anchor in anchors:
+                try:
+                    href = anchor.get_attribute("href") or ""
+                    match = re.search(r"articleid=(\d+)", href)
+                    if match:
+                        article_id = match.group(1)
+                        ids.add(article_id)
+                        
+                        # 제목도 함께 로깅 (디버깅용)
+                        title = anchor.text.strip()[:30]
+                        if title:
+                            logging.debug(f"  📝 ID {article_id}: {title}...")
+                            
+                except Exception as e:
+                    logging.debug(f"링크 처리 중 오류: {e}")
+                    continue
+                    
+        except Exception as e:
+            logging.error(f"❌ iframe 내부 링크 수집 실패: {e}")
+            
+        logging.info(f"✅ 총 {len(ids)}개 고유 articleid 수집 완료")
+        return list(ids)
         
     def setup_driver(self):
         """Selenium 드라이버 설정 - 봇 탐지 방지 및 안정성 강화"""
@@ -1001,135 +1106,191 @@ class NaverCafeCrawler:
         return False
     
     def crawl_cafe(self, cafe_config: Dict) -> List[Dict]:
-        """카페 게시물 크롤링 - StaleElement 문제 해결된 버전"""
+        """카페 게시물 크롤링 - 클래식 엔드포인트 우회 버전 💥"""
         results = []
         
         try:
-            # 1단계: 카페 게시판 접속
-            if cafe_config['name'] == 'F-E 카페':
-                board_url = f"{cafe_config['url']}/cafes/{cafe_config['club_id']}/menus/{cafe_config['board_id']}?viewType=L"
-            else:
-                board_url = f"{cafe_config['url']}/ArticleList.nhn?search.clubid={cafe_config['club_id']}&search.menuid={cafe_config['board_id']}"
+            club_id = cafe_config['club_id']
+            board_id = cafe_config['board_id']
             
-            logging.info(f"📍 URL 접속: {board_url}")
-            self.driver.get(board_url)
-            time.sleep(5)
+            # 1단계: SPA vs 클래식 전략 결정
+            force_classic = os.getenv("FORCE_CLASSIC", "0") == "1"
             
-            # 2단계: 데스크톱 강제 힌트 추가
-            if '&web=1' not in board_url:
-                board_url += '&web=1'
+            if not force_classic:
+                # 기존 SPA 메뉴 URL로 먼저 시도
+                spa_url = f"{cafe_config['url']}/cafes/{club_id}/menus/{board_id}?viewType=L&web=1"
+                logging.info(f"📍 SPA URL 시도: {spa_url}")
+                
+                if robust_get(self.driver, spa_url):
+                    if is_spa_list_page(self.driver):
+                        logging.warning("⚠️ SPA 레이아웃 감지, 클래식으로 폴백")
+                        force_classic = True
+                    else:
+                        # SPA가 아니면 iframe 전환 시도
+                        if not self.switch_to_cafe_iframe(max_tries=2, timeout_each=15, debug_screenshot=False):
+                            logging.warning("⚠️ SPA에서 iframe 전환 실패, 클래식으로 폴백")
+                            force_classic = True
+                else:
+                    logging.warning("⚠️ SPA URL 접근 실패, 클래식으로 폴백")
+                    force_classic = True
             
-            # 페이지 재로딩 (데스크톱 강제)
-            self.driver.get(board_url)
-            time.sleep(3)
+            # 2단계: 클래식 리스트로 강제/폴백
+            if force_classic:
+                classic_list_url = build_classic_list_url(club_id, board_id, user_display=50)
+                logging.info(f"🔧 클래식 URL로 전환: {classic_list_url}")
+                
+                if not robust_get(self.driver, classic_list_url):
+                    logging.error("❌ 클래식 리스트 URL 접근 실패")
+                    return results
             
-            # 3단계: 초탄탄한 iframe 전환
-            if not self.switch_to_cafe_iframe(max_tries=3, timeout_each=25, debug_screenshot=True):
-                logging.error("❌ iframe 전환 완전 실패, 크롤링 중단")
+            # 3단계: 리스트에서 articleid를 문자열로 전부 수집
+            logging.info("📊 게시물 ID 수집 시작...")
+            article_ids = self.collect_article_ids_from_classic_list()
+            
+            # 수집 실패 시 다중 페이지 탐색
+            if not article_ids:
+                logging.warning("⚠️ 첫 페이지에서 수집 실패, 다중 페이지 탐색")
+                
+                for page in range(1, 4):  # 1~3페이지 탐색
+                    page_url = build_classic_list_url(club_id, board_id, user_display=50, page=page)
+                    logging.info(f"🔍 {page}페이지 탐색: {page_url}")
+                    
+                    if robust_get(self.driver, page_url):
+                        page_ids = self.collect_article_ids_from_classic_list()
+                        article_ids.extend(page_ids)
+                        logging.info(f"✅ {page}페이지에서 {len(page_ids)}개 ID 수집")
+                    
+                    if len(article_ids) >= 20:  # 충분히 수집되면 중단
+                        break
+                
+                # 중복 제거
+                article_ids = list(dict.fromkeys(article_ids))
+            
+            if not article_ids:
+                logging.error("❌ 모든 페이지에서 articleid 수집 실패")
                 return results
             
-            logging.info("✅ iframe 전환 성공")
+            logging.info(f"📊 총 {len(article_ids)}개 게시물 ID 수집 완료")
             
-            # 4단계: 게시물 URL을 문자열로 모두 수집 (StaleElement 방지)
-            article_data_list = self._collect_article_urls_safely(cafe_config)
-            
-            # 수집 실패 시 스크롤/더보기 시도 후 재수집
-            if not article_data_list:
-                logging.warning("⚠️ 첫 번째 수집 실패, 스크롤/더보기 시도 후 재수집")
-                
-                # 스크롤 및 더보기 버튼 클릭 시도
-                for i in range(3):
-                    try:
-                        self.driver.execute_script("window.scrollTo(0, document.body.scrollHeight);")
-                        time.sleep(1)
-                        
-                        # 더보기 버튼 찾아서 클릭
-                        more_buttons = self.driver.find_elements(By.CSS_SELECTOR, 
-                            '.more, .btn_more, .load_more, button[onclick*="more"], button[onclick*="load"]')
-                        for btn in more_buttons:
-                            try:
-                                if btn.is_displayed() and btn.is_enabled():
-                                    btn.click()
-                                    time.sleep(2)
-                                    break
-                            except:
-                                continue
-                    except:
-                        pass
-                
-                # 재수집 시도
-                article_data_list = self._collect_article_urls_safely(cafe_config)
-            
-            if not article_data_list:
-                logging.error("❌ 게시물 URL 수집 완전 실패")
-                return results
-            
-            logging.info(f"📊 수집된 게시물: {len(article_data_list)}개")
-            
-            # 5단계: 각 게시물을 개별적으로 처리 (매번 새로 접근)
+            # 4단계: 각 글을 클래식 Read URL로 개별 처리
             max_articles = 10
             processed = 0
             
-            for i, article_data in enumerate(article_data_list[:20]):
+            for i, article_id in enumerate(article_ids[:20]):
                 if processed >= max_articles:
                     logging.info(f"🎯 목표 달성: {processed}개 처리 완료")
                     break
                 
                 try:
-                    logging.info(f"🔄 [{i+1}/{len(article_data_list[:20])}] 게시물 처리 중...")
+                    logging.info(f"🔄 [{i+1}/{min(len(article_ids), 20)}] 게시물 처리 중 (ID: {article_id})")
                     
-                    # 게시물 페이지로 직접 이동 (데스크톱 강제)
-                    article_url = article_data['url']
-                    if '&web=1' not in article_url:
-                        article_url += '&web=1'
+                    # 클래식 Read URL로 이동
+                    read_url = build_classic_read_url(club_id, article_id)
                     
-                    self.driver.get(article_url)
-                    time.sleep(3)
+                    if not robust_get(self.driver, read_url):
+                        logging.warning(f"⚠️ [{i+1}] 게시물 페이지 접근 실패: {read_url}")
+                        continue
                     
-                    # 매번 iframe 재전환 (더 짧은 타임아웃으로)
-                    if not self.switch_to_cafe_iframe(max_tries=2, timeout_each=20, debug_screenshot=False):
-                        logging.warning(f"⚠️ [{i+1}] iframe 재전환 실패, iframeless 모드로 시도")
-                        # iframe 없이도 내용 추출 시도
-                        pass
+                    # iframe 전환 시도 (실패해도 계속 진행)
+                    iframe_success = self.switch_to_cafe_iframe(max_tries=2, timeout_each=20, debug_screenshot=False)
+                    if not iframe_success:
+                        logging.warning(f"⚠️ [{i+1}] iframe 전환 실패, 페이지 소스에서 직접 추출 시도")
                     
-                    # 제목, 작성자, 내용 추출
-                    title = article_data.get('title', '제목 없음')
-                    author = article_data.get('author', 'Unknown')
+                    # 제목 추출 (다중 셀렉터)
+                    title = ""
+                    title_selectors = ["#articleTitle", ".title_text", "h3", ".article_title", ".subject", ".title"]
+                    for selector in title_selectors:
+                        try:
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements and elements[0].text.strip():
+                                title = elements[0].text.strip()
+                                break
+                        except:
+                            continue
                     
-                    logging.info(f"📝 [{i+1}] 처리 시작: {title[:50]}...")
-                    logging.info(f"🔗 [{i+1}] URL: {article_data['url']}")
-                    logging.info(f"👤 [{i+1}] 작성자: {author}")
+                    if not title:
+                        title = f"제목 추출 실패 (ID: {article_id})"
                     
-                    # 내용 추출
-                    try:
-                        content = self.get_article_content(article_data['url'])
-                        if content and len(content.strip()) > 10:
-                            logging.info(f"📄 [{i+1}] 내용 길이: {len(content)}자")
-                        else:
-                            logging.warning(f"⚠️ [{i+1}] 내용이 너무 짧음: {len(content) if content else 0}자")
-                            content = f"내용을 불러올 수 없습니다.\n원본 링크: {article_data['url']}"
-                    except Exception as content_error:
-                        logging.error(f"❌ [{i+1}] 내용 추출 오류: {content_error}")
-                        content = f"내용 추출 중 오류 발생: {str(content_error)[:100]}\n원본 링크: {article_data['url']}"
+                    # 작성자 추출 (다중 셀렉터)
+                    author = ""
+                    author_selectors = [".nickname", ".nick", ".writer", ".nick_area", ".article_writer", ".author"]
+                    for selector in author_selectors:
+                        try:
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements and elements[0].text.strip():
+                                author = elements[0].text.strip()
+                                break
+                        except:
+                            continue
                     
-                    # 작성일 추출 (현재 페이지에서)
+                    if not author:
+                        author = "Unknown"
+                    
+                    # 본문 추출 (다중 셀렉터)
+                    content = ""
+                    content_selectors = [
+                        "#tbody", ".article_view", ".se-main-container", 
+                        ".ContentRenderer", ".content_area", ".post_ct", ".article_content"
+                    ]
+                    for selector in content_selectors:
+                        try:
+                            elements = self.driver.find_elements(By.CSS_SELECTOR, selector)
+                            if elements and elements[0].text.strip():
+                                content = elements[0].text.strip()
+                                break
+                        except:
+                            continue
+                    
+                    # 셀렉터로 실패 시 JavaScript 백업 추출
+                    if not content or len(content) < 20:
+                        try:
+                            content = self.driver.execute_script(
+                                "return document.body.innerText || document.body.textContent || '';"
+                            ) or ""
+                            
+                            # 불필요한 텍스트 필터링
+                            if content:
+                                lines = content.split('\n')
+                                filtered_lines = []
+                                for line in lines:
+                                    line = line.strip()
+                                    if (line and len(line) > 3 and 
+                                        not any(skip in line.lower() for skip in 
+                                               ['로그인', '메뉴', '댓글', '광고', 'naver', '네이버'])):
+                                        filtered_lines.append(line)
+                                
+                                content = '\n'.join(filtered_lines[:20])  # 처음 20줄만
+                        except:
+                            pass
+                    
+                    if not content or len(content) < 10:
+                        content = f"내용을 불러올 수 없습니다.\n원본 링크: {read_url}"
+                    
+                    # 작성일 추출
                     date_str = datetime.now().strftime('%Y-%m-%d')
                     try:
-                        date_elem = self.driver.find_element(By.CSS_SELECTOR, '.date, .time, .write_date, .article_date')
-                        date_text = date_elem.text.strip()
-                        if date_text:
-                            date_str = date_text.replace('.', '-').rstrip('-')
+                        date_elements = self.driver.find_elements(By.CSS_SELECTOR, 
+                            '.date, .time, .write_date, .article_date, .post_date')
+                        for elem in date_elements:
+                            date_text = elem.text.strip()
+                            if date_text and len(date_text) > 5:
+                                date_str = date_text.replace('.', '-').rstrip('-')
+                                break
                     except:
                         pass
+                    
+                    logging.info(f"📝 [{i+1}] 제목: {title[:50]}...")
+                    logging.info(f"👤 [{i+1}] 작성자: {author}")
+                    logging.info(f"📄 [{i+1}] 내용 길이: {len(content)}자")
                     
                     # 데이터 구성
                     data = {
                         'title': title,
                         'author': author,
                         'date': date_str,
-                        'url': article_data['url'],
-                        'article_id': article_data.get('article_id', ''),
-                        'content': content,
+                        'url': read_url,
+                        'article_id': article_id,
+                        'content': content[:1500],  # 길이 제한
                         'cafe_name': cafe_config['name'],
                         'crawled_at': datetime.now().isoformat()
                     }
@@ -1145,7 +1306,7 @@ class NaverCafeCrawler:
                     logging.error(f"❌ [{i+1}] 게시물 처리 오류: {e}")
                     continue
             
-            logging.info(f"🎯 게시물 처리 완료: {processed}개 성공 (전체 {len(article_data_list)}개 중)")
+            logging.info(f"🎯 클래식 엔드포인트 크롤링 완료: {processed}개 성공 (전체 {len(article_ids)}개 중)")
             
         except Exception as e:
             logging.error(f"❌ 크롤링 오류: {e}")
@@ -1155,7 +1316,8 @@ class NaverCafeCrawler:
                 debug_info = {
                     'current_url': self.driver.current_url,
                     'title': self.driver.title,
-                    'window_handles': len(self.driver.window_handles),
+                    'is_spa': is_spa_list_page(self.driver),
+                    'force_classic': os.getenv("FORCE_CLASSIC", "0"),
                     'page_source_length': len(self.driver.page_source)
                 }
                 logging.error(f"🔍 실패 시 디버깅 정보: {debug_info}")
